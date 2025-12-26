@@ -22,11 +22,11 @@ L’option "Sortie vectorielle" de l’UI produit un PDF intermédiaire qui cons
 1. Fichiers à pousser : `streamlit_app.py`, `app.py`, `requirements.txt`, `README.md` (+ dossiers utiles comme `packaging/`, `script/`). Évite les `.app`/archives ou fichiers générés.
 2. Sur Streamlit Cloud : **New app** → choisis le repo/branche → indique `streamlit_app.py` comme fichier principal.
 3. Les dépendances Python sont installées via `requirements.txt`.
-4. Poppler (`pdftoppm`) et Ghostscript sont des binaires système optionnels :
+4. Les binaires système nécessaires sont listés dans `packages.txt` (apt) : `ghostscript` et `poppler-utils` seront installés automatiquement sur Streamlit Cloud.
    - Sans Ghostscript, l’aplat vectoriel et la compression vectorielle ne fonctionnent pas.
    - Sans Poppler, le profil raster (`pdf2image`) ne fonctionne pas.
-   Consulte les logs Streamlit Cloud pour vérifier leur présence.
-5. Test local rapide :
+5. Consulte les logs Streamlit Cloud si un binaire manque malgré `packages.txt`.
+6. Test local rapide :
    ```bash
    python3 -m venv .venv
    source .venv/bin/activate

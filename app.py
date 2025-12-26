@@ -93,6 +93,7 @@ def warn_pdftoppm() -> None:
 def find_ghostscript() -> Path | None:
     candidates = [
         shutil.which("gs"),
+        "/usr/bin/gs",
         "/opt/homebrew/bin/gs",
         "/usr/local/bin/gs",
     ]
@@ -109,6 +110,7 @@ def has_ghostscript() -> bool:
 def find_pdftops() -> Path | None:
     candidates = [
         shutil.which("pdftops"),
+        "/usr/bin/pdftops",
         "/opt/homebrew/bin/pdftops",
         "/usr/local/bin/pdftops",
     ]
@@ -121,6 +123,7 @@ def find_pdftops() -> Path | None:
 def find_qpdf() -> Path | None:
     candidates = [
         shutil.which("qpdf"),
+        "/usr/bin/qpdf",
         "/opt/homebrew/bin/qpdf",
         "/usr/local/bin/qpdf",
     ]

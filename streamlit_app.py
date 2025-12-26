@@ -228,6 +228,7 @@ def has_pdftoppm() -> bool:
     # Try PATH, then common Homebrew locations
     candidates = [
         shutil.which("pdftoppm"),
+        "/usr/bin/pdftoppm",  # Debian/Ubuntu (Streamlit Cloud)
         "/opt/homebrew/bin/pdftoppm",
         "/usr/local/bin/pdftoppm",
     ]
@@ -444,11 +445,11 @@ def main() -> None:
     has_outputs = bool(profiles) or flatten_enabled
 
     if not poppler_ok and needs_poppler:
-        st.error("Poppler/pdftoppm n'est pas installé. Requis pour les sorties rasterisées (HQ/Light).")
+        st.error("Poppler/pdftoppm n'est pas installé. Requis pour HQ/Light. Sur Streamlit Cloud, vérifie `packages.txt` (poppler-utils) puis redeploie.")
     elif not poppler_ok and not needs_poppler:
-        st.info("Poppler/pdftoppm n'est pas installé. Activez un profil HQ/Light après l'installation (brew install poppler).")
+        st.info("Poppler/pdftoppm n'est pas installé. Active un profil HQ/Light après installation (brew install poppler ou `packages.txt` → poppler-utils).")
     if needs_ghostscript and not ghostscript_ok:
-        st.error("Ghostscript (gs) est requis pour l'option vectorielle (brew install ghostscript).")
+        st.error("Ghostscript (gs) est requis pour l'option vectorielle. Sur Streamlit Cloud, ajoute `ghostscript` dans `packages.txt` puis redeploie (déjà présent si repo à jour).")
 
     start_disabled = (
         (not st.session_state.queue)
