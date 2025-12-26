@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Wrapper pour lancer l'UI Streamlit via le script packaging/run_streamlit.sh
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+
+# Cherche le run_streamlit.sh selon le contexte (bundle .app ou dossier source)
+if [[ -f "$HERE/LightPDF/packaging/run_streamlit.sh" ]]; then
+  RUN_STREAMLIT="$HERE/LightPDF/packaging/run_streamlit.sh"
+elif [[ -f "$HERE/packaging/run_streamlit.sh" ]]; then
+  RUN_STREAMLIT="$HERE/packaging/run_streamlit.sh"
+else
+  echo "[Light-PDF] Erreur: run_streamlit.sh introuvable dans packaging." >&2
+  exit 1
+fi
+
+if [[ ! -x "$RUN_STREAMLIT" ]]; then
+  chmod +x "$RUN_STREAMLIT"
+fi
+
+exec "$RUN_STREAMLIT" "$@"

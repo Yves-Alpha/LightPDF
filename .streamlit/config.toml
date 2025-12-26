@@ -1,0 +1,17 @@
+[server]
+# Paramètres réseau
+enableXsrfProtection = false
+enableWebsocketCompression = true
+maxUploadSize = 2000
+headless = true
+runOnSave = false
+enableCORS = false
+maxMessageSize = 300
+
+[client]
+showErrorDetails = true
+
+[logger]
+level = "debug"
+
+

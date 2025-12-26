@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Name</key>
+  <string>LightPDF</string>
+  <key>Identifier</key>
+  <string>com.tools.LightPDF</string>
+  <key>Version</key>
+  <string>1.0</string>
+  <key>Author</key>
+  <string>Y. Nowak</string>
+
+  <!-- Script settings -->
+  <key>ScriptType</key>
+  <string>Shell</string>
+  <key>Interpreter</key>
+  <string>/bin/bash</string>
+  <key>ScriptPath</key>
+  <string>LightPDF/packaging/run_streamlit.sh</string>
+  <key>ScriptIsText</key>
+  <true/>
+
+  <!-- UI / runtime -->
+  <key>InterfaceType</key>
+  <string>None</string>
+  <key>RunInBackground</key>
+  <true/>
+  <key>Droppable</key>
+  <false/>
+
+  <!-- Resources bundled into the app -->
+  <key>BundledFiles</key>
+  <array>
+    <string>LightPDF</string>
+  </array>
+
+  <!-- Icon (optional) -->
+  <key>UseCustomIcon</key>
+  <false/>
+  <key>IconPath</key>
+  <string></string>
+
+  <!-- File types accepted on drop -->
+  <key>AcceptDroppedFileTypes</key>
+  <array/>
+  <key>Suffixes</key>
+  <array/>
+</dict>
+</plist>
