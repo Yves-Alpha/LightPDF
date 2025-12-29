@@ -262,7 +262,7 @@ def choose_folder_via_finder(default_path: Path) -> Path | None:
 
 def main() -> None:
     page_icon = str(FAVICON) if FAVICON.exists() else "📄"
-    st.set_page_config(page_title="Light-PDF", page_icon=page_icon, layout="wide")
+    st.set_page_config(page_title="Light PDF", page_icon=page_icon, layout="wide")
     st.title("📄 Light-PDF")
     st.markdown("Optimisez vos PDFs : **sans pixellisation du texte et des images**, traits de coupe et fonds perdus supprimés.")
     
