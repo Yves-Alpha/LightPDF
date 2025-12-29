@@ -18,8 +18,8 @@ from pathlib import Path
 from typing import List
 from io import BytesIO
 
-import streamlit as st # pyright: ignore[reportMissingImports]
-from PyPDF2 import PdfReader, PdfWriter # pyright: ignore[reportMissingImports]
+import streamlit as st  # pyright: ignore[reportMissingImports]
+from PyPDF2 import PdfReader, PdfWriter  # pyright: ignore[reportMissingImports]
 
 # Ensure Application Support path uses the Light-PDF app name
 os.environ.setdefault("ROTO_APP_NAME", "Light-PDF")
@@ -262,6 +262,7 @@ def choose_folder_via_finder(default_path: Path) -> Path | None:
 
 def main() -> None:
     page_icon = str(FAVICON) if FAVICON.exists() else "📄"
+    # set_page_config doit être appelé avant toute commande Streamlit
     st.set_page_config(page_title="Light PDF", page_icon=page_icon, layout="wide")
     st.title("📄 Light-PDF")
     st.markdown("Optimisez vos PDFs : **sans pixellisation du texte et des images**, traits de coupe et fonds perdus supprimés.")
