@@ -25,6 +25,7 @@ from PyPDF2 import PdfReader, PdfWriter # pyright: ignore[reportMissingImports]
 os.environ.setdefault("ROTO_APP_NAME", "Light-PDF")
 
 ROOT_DIR = Path(__file__).resolve().parent
+FAVICON = ROOT_DIR / "icone-Light-PDF.png"
 sys.path.insert(0, str(ROOT_DIR))
 
 from app import (  # noqa: E402
@@ -260,7 +261,8 @@ def choose_folder_via_finder(default_path: Path) -> Path | None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Light-PDF", page_icon="📄", layout="wide")
+    page_icon = str(FAVICON) if FAVICON.exists() else "📄"
+    st.set_page_config(page_title="Light-PDF", page_icon=page_icon, layout="wide")
     st.title("📄 Light-PDF")
     st.markdown("Optimisez vos PDFs : **sans pixellisation du texte et des images**, traits de coupe et fonds perdus supprimés.")
     
