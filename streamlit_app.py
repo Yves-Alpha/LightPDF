@@ -14,6 +14,7 @@ import subprocess
 import shutil
 import re
 import uuid
+import zipfile
 from pathlib import Path
 from typing import List
 from io import BytesIO
@@ -404,7 +405,7 @@ def main() -> None:
 
     uploader_key = st.session_state["uploader_key"]
     st.markdown("---")
-    uploaded = st.file_uploader("📥 Sélectionnez vos PDFs à optimiser", type=["pdf"], accept_multiple_files=True, key=uploader_key)
+    uploaded = st.file_uploader("📥 Sélectionnez vos PDFs à optimiser (drag & drop)", type=["pdf"], accept_multiple_files=True, key=uploader_key)
     if uploaded:
         add_to_queue(uploaded)
 
@@ -510,6 +511,45 @@ def main() -> None:
             st.write(f"**{res['name']}**")
             for out in res["outputs"]:
                 st.code(out)
+
+        # Téléchargement des fichiers générés : ZIP (optionnel) ou individuels
+        generated_paths = []
+        for res in results:
+            for out in res["outputs"]:
+                p = Path(out)
+                if p.exists():
+                    generated_paths.append(p)
+        if generated_paths:
+            st.markdown("### Téléchargement")
+            pack_zip = False
+            if len(generated_paths) > 1:
+                pack_zip = st.checkbox(
+                    "Regrouper les sorties dans un ZIP",
+                    value=True,
+                    help="Pratique sur Streamlit Cloud pour récupérer tous les fichiers en un clic.",
+                )
+            if pack_zip and len(generated_paths) > 1:
+                zip_buf = BytesIO()
+                with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                    for p in generated_paths:
+                        zf.write(p, arcname=p.name)
+                zip_buf.seek(0)
+                st.download_button(
+                    "⬇️ Télécharger toutes les sorties (ZIP)",
+                    data=zip_buf,
+                    file_name="LightPDF_outputs.zip",
+                    mime="application/zip",
+                )
+            else:
+                for p in generated_paths:
+                    st.download_button(
+                        f"⬇️ Télécharger {p.name}",
+                        data=p.read_bytes(),
+                        file_name=p.name,
+                        mime="application/pdf",
+                    )
+        else:
+            st.info("Aucun fichier généré à proposer en téléchargement.")
 
 
 if __name__ == "__main__":
