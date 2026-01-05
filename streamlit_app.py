@@ -298,16 +298,17 @@ def main() -> None:
                 "lite": {"enabled": False, "dpi": 150, "q": 78, "vector": False},
                 "vector_hq": {"enabled": True, "dpi": 96, "q": 80, "vector": True},
             }
-        # Saisie manuelle du dossier de destination (Cloud ou local)
-        new_out = st.text_input(
-            "Chemin de destination",
-            value=st.session_state["out_dir"],
-            help="Saisis un chemin local (ou laisse la valeur par défaut). Sur Streamlit Cloud, un dossier temporaire est utilisé.",
-        )
-        if new_out != st.session_state["out_dir"]:
-            st.session_state["out_dir"] = new_out
+        
+        # Section de sélection du dossier de destination
+        st.subheader("📁 Dossier de destination")
+        if st.button("📂 Parcourir", help="Sélectionnez le dossier de destination via le Finder", use_container_width=True):
+            selected = choose_folder_via_finder(Path(st.session_state["out_dir"]))
+            if selected:
+                st.session_state["out_dir"] = str(selected)
+                st.rerun()
+        
         out_dir_str = st.session_state["out_dir"]
-        st.caption(f"📁 Destination : {out_dir_str}")
+        st.caption(f"📍 {out_dir_str}")
         bleed_mm = st.number_input("🔲 Marge de sécurité à retirer (mm)", value=5.0, min_value=0.0, step=0.5, help="Espace blanc autour de votre document à supprimer (traits de coupe, etc.)")
         st.subheader("🎯 Choisissez votre profil")
         
