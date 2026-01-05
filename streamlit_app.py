@@ -300,15 +300,7 @@ def main() -> None:
             }
         
         # Section de sélection du dossier de destination
-        st.subheader("📁 Dossier de destination")
-        if st.button("📂 Parcourir", help="Sélectionnez le dossier de destination via le Finder", use_container_width=True):
-            selected = choose_folder_via_finder(Path(st.session_state["out_dir"]))
-            if selected:
-                st.session_state["out_dir"] = str(selected)
-                st.rerun()
-        
-        out_dir_str = st.session_state["out_dir"]
-        st.caption(f"📍 {out_dir_str}")
+        st.subheader("⚙️ Paramètres")
         bleed_mm = st.number_input("🔲 Marge de sécurité à retirer (mm)", value=5.0, min_value=0.0, step=0.5, help="Espace blanc autour de votre document à supprimer (traits de coupe, etc.)")
         st.subheader("🎯 Choisissez votre profil")
         
@@ -473,84 +465,82 @@ def main() -> None:
     )
 
     if start:
-        out_dir = Path(out_dir_str).expanduser()
-        out_dir.mkdir(parents=True, exist_ok=True)
-        with st.spinner("⏳ Optimisation en cours…"):
-            if group_mode:
-                results = []
-                groups = group_by_basename(st.session_state.queue)
-                for key, items in groups.items():
-                    merged, tmpdir = merge_queue_into_pdf(items, label=key)
-                    base_name = key.replace("/", "_")
-                    with tempfile.TemporaryDirectory() as tmpclean:
-                        clean_path = Path(tmpclean) / f"{base_name}-clean.pdf"
-                        clean_pdf(merged, clean_path, bleed_mm=bleed_mm)
-                        outputs = []
-                        if flatten_enabled:
-                            flat_out = out_dir / f"{base_name}-Flat.pdf"
-                            try:
-                                method = flatten_transparency_pdf(clean_path, flat_out)
-                                outputs.append(str(flat_out))
-                                if method != "gs compat 1.3":
-                                    st.warning(f"{base_name} : aplat vectoriel via '{method}' (fallback). Vérifier le rendu.")
-                            except Exception as exc:  # pragma: no cover - UI feedback path
-                                st.error(f"{base_name} : échec de l'aplat vectoriel ({exc})")
-                        for profile in profiles:
-                            out_pdf = out_dir / f"{base_name}-{profile.name}.pdf"
-                            if profile.use_vector_compression:
-                                vector_compress_pdf(clean_path, out_pdf, profile)
-                            else:
-                                raster_compress_pdf(clean_path, out_pdf, profile)
-                            outputs.append(str(out_pdf))
-                        results.append({"name": base_name, "outputs": outputs})
-                    tmpdir.cleanup()
-                st.session_state.queue = []
-            else:
-                results = process_queue(out_dir, bleed_mm=bleed_mm, profiles=profiles, flatten=flatten_enabled)
-        st.success("✅ Optimisation terminée !")
-        for res in results:
-            st.write(f"**{res['name']}**")
-            for out in res["outputs"]:
-                st.code(out)
-
-        # Téléchargement des fichiers générés : ZIP (optionnel) ou individuels
-        generated_paths = []
-        for res in results:
-            for out in res["outputs"]:
-                p = Path(out)
-                if p.exists():
-                    generated_paths.append(p)
-        if generated_paths:
-            st.markdown("### Téléchargement")
-            pack_zip = False
-            if len(generated_paths) > 1:
-                pack_zip = st.checkbox(
-                    "Regrouper les sorties dans un ZIP",
-                    value=True,
-                    help="Pratique sur Streamlit Cloud pour récupérer tous les fichiers en un clic.",
-                )
-            if pack_zip and len(generated_paths) > 1:
-                zip_buf = BytesIO()
-                with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                    for p in generated_paths:
-                        zf.write(p, arcname=p.name)
-                zip_buf.seek(0)
-                st.download_button(
-                    "⬇️ Télécharger toutes les sorties (ZIP)",
-                    data=zip_buf,
-                    file_name="LightPDF_outputs.zip",
-                    mime="application/zip",
-                )
-            else:
+        # Utiliser un dossier temporaire pour la génération des fichiers
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_dir = Path(tmpdir)
+            with st.spinner("⏳ Optimisation en cours…"):
+                if group_mode:
+                    results = []
+                    groups = group_by_basename(st.session_state.queue)
+                    for key, items in groups.items():
+                        merged, tmpdir_merge = merge_queue_into_pdf(items, label=key)
+                        base_name = key.replace("/", "_")
+                        with tempfile.TemporaryDirectory() as tmpclean:
+                            clean_path = Path(tmpclean) / f"{base_name}-clean.pdf"
+                            clean_pdf(merged, clean_path, bleed_mm=bleed_mm)
+                            outputs = []
+                            if flatten_enabled:
+                                flat_out = out_dir / f"{base_name}-Flat.pdf"
+                                try:
+                                    method = flatten_transparency_pdf(clean_path, flat_out)
+                                    outputs.append(str(flat_out))
+                                    if method != "gs compat 1.3":
+                                        st.warning(f"{base_name} : aplat vectoriel via '{method}' (fallback). Vérifier le rendu.")
+                                except Exception as exc:  # pragma: no cover - UI feedback path
+                                    st.error(f"{base_name} : échec de l'aplat vectoriel ({exc})")
+                            for profile in profiles:
+                                out_pdf = out_dir / f"{base_name}-{profile.name}.pdf"
+                                if profile.use_vector_compression:
+                                    vector_compress_pdf(clean_path, out_pdf, profile)
+                                else:
+                                    raster_compress_pdf(clean_path, out_pdf, profile)
+                                outputs.append(str(out_pdf))
+                            results.append({"name": base_name, "outputs": outputs})
+                        tmpdir_merge.cleanup()
+                    st.session_state.queue = []
+                else:
+                    results = process_queue(out_dir, bleed_mm=bleed_mm, profiles=profiles, flatten=flatten_enabled)
+            
+            st.success("✅ Optimisation terminée !")
+            
+            # Téléchargement des fichiers générés
+            generated_paths = []
+            for res in results:
+                for out in res["outputs"]:
+                    p = Path(out)
+                    if p.exists():
+                        generated_paths.append(p)
+            
+            if generated_paths:
+                st.markdown("### ⬇️ Téléchargement")
+                
+                if len(generated_paths) > 1:
+                    # Créer un ZIP avec tous les fichiers
+                    zip_buf = BytesIO()
+                    with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                        for p in generated_paths:
+                            zf.write(p, arcname=p.name)
+                    zip_buf.seek(0)
+                    st.download_button(
+                        "📦 Télécharger tous les fichiers (ZIP)",
+                        data=zip_buf,
+                        file_name="LightPDF_outputs.zip",
+                        mime="application/zip",
+                        use_container_width=True
+                    )
+                    st.write("---")
+                
+                # Téléchargements individuels
                 for p in generated_paths:
                     st.download_button(
-                        f"⬇️ Télécharger {p.name}",
+                        f"📄 {p.name}",
                         data=p.read_bytes(),
                         file_name=p.name,
                         mime="application/pdf",
+                        use_container_width=True
                     )
-        else:
-            st.info("Aucun fichier généré à proposer en téléchargement.")
+            else:
+                st.info("Aucun fichier généré à proposer en téléchargement.")
 
 
 if __name__ == "__main__":
