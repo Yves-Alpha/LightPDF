@@ -405,6 +405,7 @@ def main() -> None:
     st.write(f"File d'attente : {len(st.session_state.queue)} fichier(s)")
     if st.button("🗑️ Tout vider"):
         st.session_state.queue = []
+        st.session_state.uploader_key = f"pdf_uploader_{uuid.uuid4()}"
         st.rerun()
 
     if st.session_state.queue:
