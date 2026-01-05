@@ -128,7 +128,7 @@ def process_queue(
             clean_pdf(tmp_pdf, clean_path, bleed_mm=bleed_mm)
             outputs = []
             if flatten:
-                flat_pdf = output_dir / f"{base}-Flat.pdf"
+                flat_pdf = output_dir / f"{base}.pdf"
                 try:
                     method = flatten_transparency_pdf(clean_path, flat_pdf)
                     outputs.append(str(flat_pdf))
@@ -137,7 +137,7 @@ def process_queue(
                 except Exception as exc:  # pragma: no cover - UI feedback path
                     st.error(f"{name} : échec de l'aplat vectoriel ({exc})")
             for profile in profiles:
-                out_pdf = output_dir / f"{base}-{profile.name}.pdf"
+                out_pdf = output_dir / f"{base}.pdf"
                 if profile.use_vector_compression:
                     vector_compress_pdf(clean_path, out_pdf, profile)
                 else:
@@ -304,16 +304,30 @@ def main() -> None:
         bleed_mm = st.number_input("🔲 Marge de sécurité à retirer (mm)", value=5.0, min_value=0.0, step=0.5, help="Espace blanc autour de votre document à supprimer (traits de coupe, etc.)")
         st.subheader("🎯 Choisissez votre profil")
         
-        # Profil recommandé : Compression Vectorielle
-        vector_state = st.session_state["profiles"]["vector_hq"]
-        vector_enabled = st.checkbox(
-            "✨ Qualité optimale – Texte et images nets (Recommandé)",
-            value=vector_state["enabled"],
-            help="Parfait pour l'archivage et l'impression. Conserve la netteté du texte et des graphiques vectoriels. Poids moyen."
-        )
-        st.session_state["profiles"]["vector_hq"]["enabled"] = vector_enabled
+        # Initialiser la sélection de profil s'il n'existe pas
+        if "selected_profile" not in st.session_state:
+            st.session_state["selected_profile"] = "vector_hq"
         
-        if vector_enabled:
+        # Radio button pour la sélection unique
+        selected = st.radio(
+            "Sélectionnez un seul profil :",
+            options=["vector_hq", "lite", "hq"],
+            format_func=lambda x: {
+                "vector_hq": "✨ Qualité optimale – Texte et images nets (Recommandé)",
+                "lite": "💾 Très léger – Poids réduit au maximum",
+                "hq": "⚙️ Impression professionnelle – Meilleure qualité (lourd)"
+            }[x],
+            key="selected_profile"
+        )
+        
+        # Mettre à jour les profils : désactiver les autres, activer le sélectionné
+        st.session_state["profiles"]["vector_hq"]["enabled"] = (selected == "vector_hq")
+        st.session_state["profiles"]["lite"]["enabled"] = (selected == "lite")
+        st.session_state["profiles"]["hq"]["enabled"] = (selected == "hq")
+        
+        # Afficher les options du profil sélectionné
+        if selected == "vector_hq":
+            vector_state = st.session_state["profiles"]["vector_hq"]
             col1, col2 = st.columns(2)
             with col1:
                 st.session_state.profiles["vector_hq"]["dpi"] = st.slider(
@@ -331,20 +345,11 @@ def main() -> None:
                     key="vector_q",
                     help="10 = très léger | 50 = équilibré | 95 = meilleure qualité"
                 )
+            if not ghostscript_ok:
+                st.warning("⚠️ Ce profil nécessite Ghostscript. Installez via : `brew install ghostscript`")
         
-        if vector_enabled and not ghostscript_ok:
-            st.warning("⚠️ Ce profil nécessite Ghostscript. Installez via : `brew install ghostscript`")
-        
-        # Profil allégé
-        lite_state = st.session_state["profiles"]["lite"]
-        lite_enabled = st.checkbox(
-            "💾 Très léger – Poids réduit au maximum",
-            value=lite_state["enabled"],
-            help="Pour la diffusion par email ou web. Qualité réduite mais fichier très léger. Texte peut être légèrement pixellisé."
-        )
-        st.session_state["profiles"]["lite"]["enabled"] = lite_enabled
-        
-        if lite_enabled:
+        elif selected == "lite":
+            lite_state = st.session_state["profiles"]["lite"]
             col1, col2 = st.columns(2)
             with col1:
                 st.session_state.profiles["lite"]["dpi"] = st.slider(
@@ -363,27 +368,26 @@ def main() -> None:
                     help="10-40 = très compressé | 50-70 = équilibré"
                 )
         
+        elif selected == "hq":
+            hq_state = st.session_state["profiles"]["hq"]
+            st.write("**Profil haute qualité**")
+            st.session_state.profiles["hq"]["dpi"] = st.slider(
+                "Résolution des images",
+                min_value=72, max_value=300, 
+                value=st.session_state.profiles["hq"]["dpi"],
+                key="hq_dpi"
+            )
+            st.session_state.profiles["hq"]["q"] = st.slider(
+                "Compression",
+                min_value=10, max_value=100, 
+                value=st.session_state.profiles["hq"]["q"],
+                key="hq_q"
+            )
+        
         st.markdown("---")
         
         # Options avancées (cachées)
-        hq_state = st.session_state["profiles"]["hq"]
-        with st.expander("⚙️ Options avancées"):
-            st.write("**Profil haute qualité (non recommandé)**")
-            hq_enabled = st.checkbox("Impression professionnelle – Meilleure qualité (lourd)", value=hq_state["enabled"])
-            st.session_state["profiles"]["hq"]["enabled"] = hq_enabled
-            if hq_enabled:
-                st.session_state.profiles["hq"]["dpi"] = st.slider(
-                    "Résolution des images",
-                    min_value=72, max_value=300, 
-                    value=st.session_state.profiles["hq"]["dpi"],
-                    key="hq_dpi"
-                )
-                st.session_state.profiles["hq"]["q"] = st.slider(
-                    "Compression",
-                    min_value=10, max_value=100, 
-                    value=st.session_state.profiles["hq"]["q"],
-                    key="hq_q"
-                )
+        with st.expander("⚙️ Options spéciales"):
             
             st.markdown("---")
             st.write("**Options spéciales**")
@@ -481,7 +485,7 @@ def main() -> None:
                             clean_pdf(merged, clean_path, bleed_mm=bleed_mm)
                             outputs = []
                             if flatten_enabled:
-                                flat_out = out_dir / f"{base_name}-Flat.pdf"
+                                flat_out = out_dir / f"{base_name}.pdf"
                                 try:
                                     method = flatten_transparency_pdf(clean_path, flat_out)
                                     outputs.append(str(flat_out))
@@ -490,7 +494,7 @@ def main() -> None:
                                 except Exception as exc:  # pragma: no cover - UI feedback path
                                     st.error(f"{base_name} : échec de l'aplat vectoriel ({exc})")
                             for profile in profiles:
-                                out_pdf = out_dir / f"{base_name}-{profile.name}.pdf"
+                                out_pdf = out_dir / f"{base_name}.pdf"
                                 if profile.use_vector_compression:
                                     vector_compress_pdf(clean_path, out_pdf, profile)
                                 else:
