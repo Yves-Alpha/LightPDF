@@ -227,13 +227,22 @@ def flatten_transparency_pdf(input_pdf: Path, output_pdf: Path, allow_fallback_1
     """
     Flatten transparencies using Ghostscript while keeping vector data.
     Returns the label of the method that succeeded.
+    Implements multiple fallback strategies to handle problematic PDFs.
     """
     gs_bin = find_ghostscript()
     if not gs_bin:
         raise RuntimeError("Ghostscript (commande 'gs') est requis pour aplatir les transparences.")
 
     output_pdf.parent.mkdir(parents=True, exist_ok=True)
-    base_cmd = [
+    
+    def _run(cmd: list[str]) -> tuple[int, str]:
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        return res.returncode, (res.stderr.strip() or res.stdout.strip() or "")
+
+    errors: list[str] = []
+    
+    # Strategy 1: Standard compression parameters
+    base_cmd_standard = [
         str(gs_bin),
         "-dBATCH",
         "-dNOPAUSE",
@@ -247,12 +256,8 @@ def flatten_transparency_pdf(input_pdf: Path, output_pdf: Path, allow_fallback_1
         "-dMonoImageDownsampleType=/None",
         "-dAutoRotatePages=/None",
     ]
-
-    def _run(cmd: list[str]) -> tuple[int, str]:
-        res = subprocess.run(cmd, capture_output=True, text=True)
-        return res.returncode, (res.stderr.strip() or res.stdout.strip() or "")
-
-    attempts: list[tuple[str, list[str]] | None] = [
+    
+    attempts_standard: list[tuple[str, list[str]] | None] = [
         ("gs compat 1.3", ["-dCompatibilityLevel=1.3"]),
         ("gs compat 1.4", ["-dCompatibilityLevel=1.4"]) if allow_fallback_14 else None,
         ("gs compat 1.3 + override ICC", ["-dCompatibilityLevel=1.3", "-dOverrideICC", "-dUseFastColor=true"]),
@@ -260,34 +265,36 @@ def flatten_transparency_pdf(input_pdf: Path, output_pdf: Path, allow_fallback_1
         if allow_fallback_14
         else None,
     ]
-    attempts = [a for a in attempts if a is not None]  # type: ignore
+    attempts_standard = [a for a in attempts_standard if a is not None]  # type: ignore
 
-    errors: list[str] = []
-    for label, extra in attempts:  # type: ignore
-        cmd = [*base_cmd, *extra, f"-sOutputFile={output_pdf}", str(input_pdf)]
+    for label, extra in attempts_standard:  # type: ignore
+        cmd = [*base_cmd_standard, *extra, f"-sOutputFile={output_pdf}", str(input_pdf)]
         code, msg = _run(cmd)
         if code == 0:
             print(f"[FLAT] written {output_pdf} ({label})")
             return label
         errors.append(f"{label}: {msg or f'code {code}'}")
-
-    # Last-chance fallback: pdftops -> PS -> gs
-    pdftops = find_pdftops()
-    if pdftops:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            ps_path = Path(tmpdir) / "flatten.ps"
-            conv = subprocess.run([str(pdftops), str(input_pdf), str(ps_path)], capture_output=True, text=True)
-            if conv.returncode == 0 and ps_path.exists():
-                cmd_ps = [*base_cmd, "-dCompatibilityLevel=1.4", f"-sOutputFile={output_pdf}", str(ps_path)]
-                code3, msg3 = _run(cmd_ps)
-                if code3 == 0:
-                    print(f"[FLAT] written {output_pdf} (pdftops+gs)")
-                    return "pdftops+gs"
-                errors.append(f"pdftops+gs: {msg3 or f'code {code3}'}")
-            else:
-                errors.append(f"pdftops: {conv.stderr.strip() or conv.stdout.strip() or f'code {conv.returncode}'}")
-
-    # Another fallback: qpdf rewrite then gs
+    
+    # Strategy 2: Minimal parameters (to fix rangecheck errors)
+    base_cmd_minimal = [
+        str(gs_bin),
+        "-dBATCH",
+        "-dNOPAUSE",
+        "-dSAFER",
+        "-sDEVICE=pdfwrite",
+        "-dCompatibilityLevel=1.3",
+        "-dCompressFonts=true",
+        "-dAutoRotatePages=/None",
+    ]
+    
+    cmd_minimal = [*base_cmd_minimal, f"-sOutputFile={output_pdf}", str(input_pdf)]
+    code, msg = _run(cmd_minimal)
+    if code == 0:
+        print(f"[FLAT] written {output_pdf} (minimal parameters)")
+        return "minimal parameters"
+    errors.append(f"minimal parameters: {msg or f'code {code}'}")
+    
+    # Strategy 3: qpdf rewrite then minimal gs
     qpdf_bin = find_qpdf()
     if qpdf_bin:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -304,16 +311,33 @@ def flatten_transparency_pdf(input_pdf: Path, output_pdf: Path, allow_fallback_1
                 text=True,
             )
             if conv.returncode == 0 and qpdf_out.exists():
-                cmd_qpdf_gs = [*base_cmd, "-dCompatibilityLevel=1.3", f"-sOutputFile={output_pdf}", str(qpdf_out)]
+                cmd_qpdf_gs = [*base_cmd_minimal, f"-sOutputFile={output_pdf}", str(qpdf_out)]
                 code4, msg4 = _run(cmd_qpdf_gs)
                 if code4 == 0:
-                    print(f"[FLAT] written {output_pdf} (qpdf+gs compat 1.3)")
-                    return "qpdf+gs compat 1.3"
-                errors.append(f"qpdf+gs: {msg4 or f'code {code4}'}")
+                    print(f"[FLAT] written {output_pdf} (qpdf+gs minimal)")
+                    return "qpdf+gs minimal"
+                errors.append(f"qpdf+gs minimal: {msg4 or f'code {code4}'}")
             else:
                 errors.append(f"qpdf: {conv.stderr.strip() or conv.stdout.strip() or f'code {conv.returncode}'}")
 
+    # Strategy 4: pdftops -> PS -> gs with minimal parameters
+    pdftops = find_pdftops()
+    if pdftops:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ps_path = Path(tmpdir) / "flatten.ps"
+            conv = subprocess.run([str(pdftops), str(input_pdf), str(ps_path)], capture_output=True, text=True)
+            if conv.returncode == 0 and ps_path.exists():
+                cmd_ps = [*base_cmd_minimal, f"-sOutputFile={output_pdf}", str(ps_path)]
+                code3, msg3 = _run(cmd_ps)
+                if code3 == 0:
+                    print(f"[FLAT] written {output_pdf} (pdftops+gs minimal)")
+                    return "pdftops+gs minimal"
+                errors.append(f"pdftops+gs minimal: {msg3 or f'code {code3}'}")
+            else:
+                errors.append(f"pdftops: {conv.stderr.strip() or conv.stdout.strip() or f'code {conv.returncode}'}")
+
     raise RuntimeError("Ghostscript a échoué. " + " | ".join(errors))
+
 
 
 def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionProfile) -> None:
@@ -348,101 +372,149 @@ def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
     # sRGB conversion for file size reduction (except for HQ profile)
     use_srgb = profile.name != "HQ"
     
-    cmd = [
-        str(gs_bin),
-        "-dBATCH",
-        "-dNOPAUSE",
-        "-dSAFER",
-        "-sDEVICE=pdfwrite",
-        "-dCompatibilityLevel=1.3",  # Force PDF 1.3 for better compression and compatibility
-        # Core settings - preserve vector and soft effects
-        "-dDetectDuplicateImages=true",
-        "-dCompressFonts=true",
-        "-dSubsetFonts=true",
-        "-dEmbedAllFonts=true",
-        
-        # Image quality settings - CRITICAL for compression
-        f"-dColorImageDownsampleType=/Bicubic",
-        f"-dGrayImageDownsampleType=/Bicubic",
-        f"-dMonoImageDownsampleType=/Bicubic",
-        f"-dColorImageResolution={img_res}",
-        f"-dGrayImageResolution={img_res}",
-        f"-dMonoImageResolution={img_res}",
-        f"-dDownsampleColorImages={downsample_color}",
-        f"-dDownsampleGrayImages={downsample_gray}",
-        f"-dDownsampleMonoImages=false",
-        
-        # JPEG compression for images (critical for file size)
-        # Lower quality = more compression, smaller file
-        f"-dJPEGQ={jpeg_quality}",
-        
-        # Stream compression
-        "-dCompressStreams=true",
-        
-        # Preserve anti-aliasing and soft edges
-        "-dAntiAliasGrayImages=true",
-        "-dAntiAliasColorImages=true",
-        "-dAntiAliasMonoImages=true",
-        
-        # Transparency and rendering
-        "-dAutoRotatePages=/None",
-        "-dPreserveHalftoneInfo=false",
-        "-dPreserveOverprintSettings=true",
-        "-dTransferFunctionInfo=/Preserve",
-        "-dUseFastColor=false",  # Use slower but more accurate color
+    # Strategy 1: Full-featured compression with all optimizations
+    def _build_full_cmd() -> list[str]:
+        return [
+            str(gs_bin),
+            "-dBATCH",
+            "-dNOPAUSE",
+            "-dSAFER",
+            "-sDEVICE=pdfwrite",
+            "-dCompatibilityLevel=1.3",  # Force PDF 1.3 for better compression and compatibility
+            # Core settings - preserve vector and soft effects
+            "-dDetectDuplicateImages=true",
+            "-dCompressFonts=true",
+            "-dSubsetFonts=true",
+            "-dEmbedAllFonts=true",
+            
+            # Image quality settings - CRITICAL for compression
+            f"-dColorImageDownsampleType=/Bicubic",
+            f"-dGrayImageDownsampleType=/Bicubic",
+            f"-dMonoImageDownsampleType=/Bicubic",
+            f"-dColorImageResolution={img_res}",
+            f"-dGrayImageResolution={img_res}",
+            f"-dMonoImageResolution={img_res}",
+            f"-dDownsampleColorImages={downsample_color}",
+            f"-dDownsampleGrayImages={downsample_gray}",
+            f"-dDownsampleMonoImages=false",
+            
+            # JPEG compression for images (critical for file size)
+            # Lower quality = more compression, smaller file
+            f"-dJPEGQ={jpeg_quality}",
+            
+            # Stream compression
+            "-dCompressStreams=true",
+            
+            # Preserve anti-aliasing and soft edges
+            "-dAntiAliasGrayImages=true",
+            "-dAntiAliasColorImages=true",
+            "-dAntiAliasMonoImages=true",
+            
+            # Transparency and rendering
+            "-dAutoRotatePages=/None",
+            "-dPreserveHalftoneInfo=false",
+            "-dPreserveOverprintSettings=true",
+            "-dTransferFunctionInfo=/Preserve",
+            "-dUseFastColor=false",  # Use slower but more accurate color
+            
+            # Color conversion
+            ("-dProcessColorModel=/DeviceRGB" if use_srgb else "-dColorConversionStrategy=/LeaveColorUnchanged"),
+            ("-dColorConversionStrategy=/RGB" if use_srgb else "-dProcessColorModel=/DeviceCMYK"),
+            
+            # Gradient and blend settings
+            "-dBlendColorSpace=/DeviceRGB",
+            "-dAlignToPixels=1",
+            
+            f"-sOutputFile={output_pdf}",
+            str(input_pdf),
+        ]
+    
+    # Strategy 2: Reduced parameters without problematic device properties
+    def _build_minimal_cmd() -> list[str]:
+        return [
+            str(gs_bin),
+            "-dBATCH",
+            "-dNOPAUSE",
+            "-dSAFER",
+            "-sDEVICE=pdfwrite",
+            "-dCompatibilityLevel=1.3",
+            "-dDetectDuplicateImages=true",
+            "-dCompressFonts=true",
+            "-dSubsetFonts=true",
+            "-dEmbedAllFonts=true",
+            f"-dColorImageResolution={img_res}",
+            f"-dGrayImageResolution={img_res}",
+            f"-dJPEGQ={jpeg_quality}",
+            "-dCompressStreams=true",
+            "-dAutoRotatePages=/None",
+            f"-sOutputFile={output_pdf}",
+            str(input_pdf),
+        ]
+    
+    # Strategy 3: Ultra-safe with no color model parameters
+    def _build_safe_cmd() -> list[str]:
+        return [
+            str(gs_bin),
+            "-dBATCH",
+            "-dNOPAUSE",
+            "-dSAFER",
+            "-sDEVICE=pdfwrite",
+            "-dCompatibilityLevel=1.3",
+            "-dCompressFonts=true",
+            "-dSubsetFonts=true",
+            f"-dJPEGQ={jpeg_quality}",
+            "-dCompressStreams=true",
+            f"-sOutputFile={output_pdf}",
+            str(input_pdf),
+        ]
+    
+    # Try strategies in order
+    strategies = [
+        ("full-featured", _build_full_cmd),
+        ("minimal", _build_minimal_cmd),
+        ("ultra-safe", _build_safe_cmd),
     ]
     
-    # sRGB conversion: REAL CMYK→RGB conversion (except HQ profile)
-    # Use the PostScript rendering to force the interpretation of CMYK as RGB during output
-    if use_srgb:
-        cmd.extend([
-            "-dProcessColorModel=/DeviceRGB",
-            "-dColorConversionStrategy=/RGB",
-        ])
-    else:
-        # HQ profile: preserve original colors
-        cmd.append("-dColorConversionStrategy=/LeaveColorUnchanged")
-
-    cmd.extend([
-        # Gradient and blend settings
-        "-dBlendColorSpace=/DeviceRGB",
-        "-dAlignToPixels=1",
+    errors: list[str] = []
+    for strategy_name, builder in strategies:
+        cmd = builder()
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            print(f"[{profile.name}] {input_pdf.name} compressed with GS using '{strategy_name}' strategy")
+            print(f"[{profile.name}] DPI={profile.dpi}, quality={profile.quality}")
+            if use_srgb:
+                print(f"[{profile.name}] sRGB conversion applied")
+            print(f"[{profile.name}] written {output_pdf}")
+            
+            # Post-processing for sRGB: Use qpdf to force color space conversion if needed
+            if use_srgb:
+                try:
+                    # qpdf can rewrite color spaces - convert any remaining CMYK to RGB
+                    temp_output = Path(str(output_pdf) + ".tmp.pdf")
+                    qpdf_cmd = [
+                        "qpdf",
+                        "--stream-data=uncompress",  # Uncompress streams to see color directives
+                        "--",
+                        str(output_pdf),
+                        str(temp_output)
+                    ]
+                    result = subprocess.run(qpdf_cmd, capture_output=True, text=True, timeout=60)
+                    if result.returncode == 0:
+                        temp_output.replace(output_pdf)
+                        print(f"[{profile.name}] Color space post-processing applied with qpdf")
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    # qpdf not available, continue with GS output only
+                    pass
+            return
         
-        f"-sOutputFile={output_pdf}",
-        str(input_pdf),
-    ])
+        error_msg = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
+        errors.append(f"{strategy_name}: {error_msg}")
     
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"Ghostscript compression échouée:\n{result.stderr or result.stdout}"
-        )
-    
-    # Post-processing for sRGB: Use qpdf to force color space conversion if needed
-    if use_srgb:
-        try:
-            # qpdf can rewrite color spaces - convert any remaining CMYK to RGB
-            temp_output = Path(str(output_pdf) + ".tmp.pdf")
-            qpdf_cmd = [
-                "qpdf",
-                "--stream-data=uncompress",  # Uncompress streams to see color directives
-                "--",
-                str(output_pdf),
-                str(temp_output)
-            ]
-            result = subprocess.run(qpdf_cmd, capture_output=True, text=True, timeout=60)
-            if result.returncode == 0:
-                temp_output.replace(output_pdf)
-                print(f"[{profile.name}] Color space post-processing applied with qpdf")
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            # qpdf not available, continue with GS output only
-            pass
-    
-    print(f"[{profile.name}] {input_pdf.name} compressed with GS (vector-safe, shadows preserved)")
-    print(f"[{profile.name}] DPI={profile.dpi}, quality={profile.quality} → compression_level={min(9, max(1, 10 - (profile.quality // 10)))}")
-    if use_srgb:
-        print(f"[{profile.name}] sRGB conversion applied")
-    print(f"[{profile.name}] written {output_pdf}")
+    # All strategies failed - report error
+    raise RuntimeError(
+        f"Ghostscript compression échouée (tous les stratégies):\n" + "\n".join(errors)
+    )
+
 
 
 def raster_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionProfile) -> None:
