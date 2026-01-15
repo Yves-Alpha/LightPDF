@@ -79,7 +79,7 @@ def _install_deps(mods: Iterable[str]) -> None:
 
 
 def ensure_deps() -> None:
-    required = ["PyPDF2", "pdf2image", "reportlab", "Pillow", "streamlit"]
+    required = ["PyPDF2", "pdf2image", "reportlab", "Pillow", "streamlit", "pikepdf"]
     missing = _missing_modules(required)
     if missing:
         _install_deps(required)
@@ -160,6 +160,7 @@ class CompressionProfile:
     dpi: int
     quality: int  # JPEG quality (1-95)
     use_vector_compression: bool = False  # If True, use GS compression (keeps vectors/text); if False, rasterize
+    image_only: bool = False  # If True, recompress embedded images without rasterizing vectors
 
 
 def _rectangle_as_tuple(rect) -> Tuple[float, float, float, float]:
@@ -355,6 +356,29 @@ def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
     gs_bin = find_ghostscript()
     if not gs_bin:
         raise RuntimeError("Ghostscript est requis pour la compression vectorielle.")
+
+    # True vector-safe path: for Vector-HQ, avoid Ghostscript compression (it can rasterize).
+    # Use qpdf to recompress streams without altering vector content.
+    if profile.name == "Vector-HQ":
+        output_pdf.parent.mkdir(parents=True, exist_ok=True)
+        qpdf_cmd = [
+            "qpdf",
+            "--stream-data=compress",
+            "--recompress-streams=y",
+            "--object-streams=generate",
+            "--compression-level=9",
+            "--",
+            str(input_pdf),
+            str(output_pdf),
+        ]
+        result = subprocess.run(qpdf_cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(
+                "qpdf est requis pour Vector-HQ (préserver les vecteurs). "
+                f"Détail: {result.stderr.strip() or result.stdout.strip() or 'échec qpdf'}"
+            )
+        print(f"[{profile.name}] qpdf recompress (vectors preserved) -> {output_pdf}")
+        return
     
     output_pdf.parent.mkdir(parents=True, exist_ok=True)
     
@@ -530,6 +554,69 @@ def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
     raise RuntimeError(
         f"Ghostscript compression échouée (tous les stratégies):\n" + "\n".join(errors)
     )
+
+
+def compress_images_only_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionProfile) -> None:
+    """
+    Recompress embedded raster images only (JPEG quality + optional downscale),
+    while preserving vector content (no rasterization of vectors/text).
+    """
+    try:
+        import pikepdf
+        from pikepdf import PdfImage
+        from PIL import Image
+    except Exception as exc:  # pragma: no cover - dependency path
+        raise RuntimeError(f"pikepdf/Pillow requis pour ce profil: {exc}")
+
+    pdf = pikepdf.open(str(input_pdf))
+    scale = min(1.0, max(0.1, profile.dpi / 300.0))
+    jpeg_quality = min(95, max(10, profile.quality))
+
+    for page in pdf.pages:
+        resources = page.get("/Resources", None)
+        if not resources:
+            continue
+        xobjects = resources.get("/XObject", None)
+        if not xobjects:
+            continue
+
+        for name, obj in list(xobjects.items()):
+            try:
+                img = PdfImage(obj)
+            except Exception:
+                continue
+
+            # Skip 1-bit images (text/line art) to avoid quality loss
+            try:
+                pil = img.as_pil_image()
+            except Exception:
+                continue
+
+            if pil.mode == "1":
+                continue
+
+            # Remove alpha to keep JPEG compatibility
+            if pil.mode in ("RGBA", "LA"):
+                bg = Image.new("RGB", pil.size, (255, 255, 255))
+                bg.paste(pil, mask=pil.split()[-1])
+                pil = bg
+            elif pil.mode not in ("RGB", "L"):
+                pil = pil.convert("RGB")
+
+            # Optional downscale based on DPI (relative to 300 DPI baseline)
+            if scale < 1.0:
+                new_size = (max(1, int(pil.width * scale)), max(1, int(pil.height * scale)))
+                if new_size != pil.size:
+                    pil = pil.resize(new_size, resample=Image.LANCZOS)
+
+            try:
+                img.replace(pil, quality=jpeg_quality, optimize=True, progressive=True)
+            except Exception:
+                # If replace fails, keep original
+                continue
+
+    output_pdf.parent.mkdir(parents=True, exist_ok=True)
+    pdf.save(str(output_pdf))
 
 
 

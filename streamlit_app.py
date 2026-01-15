@@ -32,7 +32,9 @@ sys.path.insert(0, str(ROOT_DIR))
 from app import (  # noqa: E402
     CompressionProfile,
     clean_pdf,
+    compress_images_only_pdf,
     flatten_transparency_pdf,
+    find_qpdf,
     has_ghostscript,
     raster_compress_pdf,
     vector_compress_pdf,
@@ -137,8 +139,10 @@ def process_queue(
                 except Exception as exc:  # pragma: no cover - UI feedback path
                     st.error(f"{name} : échec de l'aplat vectoriel ({exc})")
             for profile in profiles:
-                out_pdf = output_dir / f"{base}.pdf"
-                if profile.use_vector_compression:
+                out_pdf = output_dir / f"{base}-{profile.name}.pdf"
+                if profile.image_only:
+                    compress_images_only_pdf(clean_path, out_pdf, profile)
+                elif profile.use_vector_compression:
                     vector_compress_pdf(clean_path, out_pdf, profile)
                 else:
                     raster_compress_pdf(clean_path, out_pdf, profile)
@@ -281,6 +285,12 @@ def main() -> None:
         print(f"[ERROR] has_pdftoppm() failed: {e}", flush=True)
         poppler_ok = False
 
+    try:
+        qpdf_ok = find_qpdf() is not None
+    except Exception as e:
+        print(f"[ERROR] find_qpdf() failed: {e}", flush=True)
+        qpdf_ok = False
+
     _init_queue()
     if "flatten_enabled" not in st.session_state:
         st.session_state["flatten_enabled"] = False
@@ -297,6 +307,7 @@ def main() -> None:
                 "hq": {"enabled": False, "dpi": 300, "q": 92, "vector": False},
                 "lite": {"enabled": False, "dpi": 150, "q": 78, "vector": False},
                 "vector_hq": {"enabled": True, "dpi": 150, "q": 85, "vector": True},
+                "vector_mix": {"enabled": False, "dpi": 150, "q": 75, "vector": True},
             }
         
         # Section de sélection du dossier de destination
@@ -311,9 +322,10 @@ def main() -> None:
         # Radio button pour la sélection unique
         selected = st.radio(
             "Sélectionnez un seul profil :",
-            options=["vector_hq", "lite", "hq"],
+            options=["vector_hq", "vector_mix", "lite", "hq"],
             format_func=lambda x: {
-                "vector_hq": "✨ Qualité optimale – Texte et images nets (Recommandé)",
+                "vector_hq": "🪶 Préserver les vecteurs (sans rasterisation)",
+                "vector_mix": "🧩 Vecteurs + images compressées (sans rasterisation)",
                 "lite": "💾 Très léger – Poids réduit au maximum",
                 "hq": "⚙️ Impression professionnelle – Meilleure qualité (lourd)"
             }[x],
@@ -322,31 +334,35 @@ def main() -> None:
         
         # Mettre à jour les profils : désactiver les autres, activer le sélectionné
         st.session_state["profiles"]["vector_hq"]["enabled"] = (selected == "vector_hq")
+        st.session_state["profiles"]["vector_mix"]["enabled"] = (selected == "vector_mix")
         st.session_state["profiles"]["lite"]["enabled"] = (selected == "lite")
         st.session_state["profiles"]["hq"]["enabled"] = (selected == "hq")
         
         # Afficher les options du profil sélectionné
         if selected == "vector_hq":
-            vector_state = st.session_state["profiles"]["vector_hq"]
+            st.info("Ce profil préserve 100% des vecteurs. Compression sans perte (DPI/Qualité ignorés).")
+            if not qpdf_ok:
+                st.warning("⚠️ Ce profil nécessite qpdf. Installez via : `brew install qpdf`")
+
+        elif selected == "vector_mix":
             col1, col2 = st.columns(2)
             with col1:
-                st.session_state.profiles["vector_hq"]["dpi"] = st.slider(
+                st.session_state.profiles["vector_mix"]["dpi"] = st.slider(
                     "Résolution des images (DPI)",
-                    min_value=72, max_value=300, 
-                    value=st.session_state.profiles["vector_hq"]["dpi"],
-                    key="vector_dpi",
-                    help="72 DPI = léger | 150 DPI = équilibré | 300 DPI = maximum qualité"
+                    min_value=72, max_value=300,
+                    value=st.session_state.profiles["vector_mix"]["dpi"],
+                    key="vector_mix_dpi",
+                    help="Agit uniquement sur les images raster (pas sur les vecteurs)."
                 )
             with col2:
-                st.session_state.profiles["vector_hq"]["q"] = st.slider(
+                st.session_state.profiles["vector_mix"]["q"] = st.slider(
                     "Compression",
-                    min_value=10, max_value=100, 
-                    value=st.session_state.profiles["vector_hq"]["q"],
-                    key="vector_q",
-                    help="10 = très léger | 50 = équilibré | 95 = meilleure qualité"
+                    min_value=10, max_value=100,
+                    value=st.session_state.profiles["vector_mix"]["q"],
+                    key="vector_mix_q",
+                    help="Qualité JPEG des images raster uniquement."
                 )
-            if not ghostscript_ok:
-                st.warning("⚠️ Ce profil nécessite Ghostscript. Installez via : `brew install ghostscript`")
+            st.info("Ce profil compresse uniquement les images raster et conserve les vecteurs.")
         
         elif selected == "lite":
             lite_state = st.session_state["profiles"]["lite"]
@@ -429,6 +445,10 @@ def main() -> None:
         profiles.append(
             CompressionProfile("Vector-HQ", dpi=int(prof_state["vector_hq"]["dpi"]), quality=int(prof_state["vector_hq"]["q"]), use_vector_compression=True)
         )
+    if prof_state.get("vector_mix", {}).get("enabled"):
+        profiles.append(
+            CompressionProfile("Vector-IMG", dpi=int(prof_state["vector_mix"]["dpi"]), quality=int(prof_state["vector_mix"]["q"]), use_vector_compression=True, image_only=True)
+        )
     
     # Debug: afficher les profils construits
     if profiles:
@@ -438,8 +458,9 @@ def main() -> None:
 
     flatten_enabled = bool(st.session_state.get("flatten_enabled", False))
     needs_poppler = any(not p.use_vector_compression for p in profiles)
-    needs_ghostscript = any(p.use_vector_compression for p in profiles) or flatten_enabled
+    needs_ghostscript = flatten_enabled
     has_outputs = bool(profiles) or flatten_enabled
+    needs_qpdf = any(p.use_vector_compression and p.name == "Vector-HQ" for p in profiles)
 
     if not poppler_ok and needs_poppler:
         st.error("Poppler/pdftoppm n'est pas installé. Requis pour HQ/Light. Sur Streamlit Cloud, vérifie `packages.txt` (poppler-utils) puis redeploie.")
@@ -452,6 +473,7 @@ def main() -> None:
         (not st.session_state.queue)
         or (needs_poppler and not poppler_ok)
         or (needs_ghostscript and not ghostscript_ok)
+        or (needs_qpdf and not qpdf_ok)
         or (not has_outputs)
     )
 
@@ -487,7 +509,9 @@ def main() -> None:
                                     st.error(f"{base_name} : échec de l'aplat vectoriel ({exc})")
                             for profile in profiles:
                                 out_pdf = out_dir / f"{base_name}-{profile.name}.pdf"
-                                if profile.use_vector_compression:
+                                if profile.image_only:
+                                    compress_images_only_pdf(clean_path, out_pdf, profile)
+                                elif profile.use_vector_compression:
                                     vector_compress_pdf(clean_path, out_pdf, profile)
                                 else:
                                     raster_compress_pdf(clean_path, out_pdf, profile)
