@@ -571,8 +571,11 @@ def compress_images_only_pdf(input_pdf: Path, output_pdf: Path, profile: Compres
     pdf = pikepdf.open(str(input_pdf))
     scale = min(1.0, max(0.1, profile.dpi / 300.0))
     jpeg_quality = min(95, max(10, profile.quality))
+    
+    images_processed = 0
+    images_downscaled = 0
 
-    for page in pdf.pages:
+    for page_idx, page in enumerate(pdf.pages):
         resources = page.get("/Resources", None)
         if not resources:
             continue
@@ -603,20 +606,28 @@ def compress_images_only_pdf(input_pdf: Path, output_pdf: Path, profile: Compres
             elif pil.mode not in ("RGB", "L"):
                 pil = pil.convert("RGB")
 
-            # Optional downscale based on DPI (relative to 300 DPI baseline)
+            original_size = pil.width * pil.height
+            
+            # Downscale based on DPI (relative to 300 DPI baseline)
             if scale < 1.0:
                 new_size = (max(1, int(pil.width * scale)), max(1, int(pil.height * scale)))
-                if new_size != pil.size:
+                if new_size != (pil.width, pil.height):
                     pil = pil.resize(new_size, resample=Image.LANCZOS)
+                    images_downscaled += 1
 
+            # Always recompress with the specified JPEG quality
             try:
                 img.replace(pil, quality=jpeg_quality, optimize=True, progressive=True)
-            except Exception:
-                # If replace fails, keep original
+                images_processed += 1
+            except Exception as e:
+                print(f"[{profile.name}] Impossible de compresser image page {page_idx}: {e}")
                 continue
 
     output_pdf.parent.mkdir(parents=True, exist_ok=True)
     pdf.save(str(output_pdf))
+    print(f"[{profile.name}] Compression images: {images_processed} images compressées, {images_downscaled} downscalées")
+    print(f"[{profile.name}] DPI={profile.dpi}, Quality={profile.quality}, Scale={scale:.2f}")
+    print(f"[{profile.name}] written {output_pdf}")
 
 
 
