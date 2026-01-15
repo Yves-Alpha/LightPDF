@@ -529,14 +529,14 @@ def main() -> None:
                     st.write("---")
                 
                 # Téléchargements individuels
-                for p in generated_paths:
+                for idx, p in enumerate(generated_paths):
                     st.download_button(
                         f"📄 {p.name}",
                         data=p.read_bytes(),
                         file_name=p.name,
                         mime="application/pdf",
                         use_container_width=True,
-                        key=f"download_{p.name}"
+                        key=f"download_{idx}_{p.name}"
                     )
             else:
                 st.info("Aucun fichier généré à proposer en téléchargement.")
