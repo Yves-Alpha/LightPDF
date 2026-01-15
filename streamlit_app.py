@@ -265,7 +265,7 @@ def main() -> None:
     page_icon = str(FAVICON) if FAVICON.exists() else "📄"
     # set_page_config doit être appelé avant toute commande Streamlit
     st.set_page_config(page_title="Light PDF", page_icon=page_icon, layout="wide")
-    st.title("📄 Light-PDF")
+    st.title("🪶 Light-PDF")
     st.markdown("Optimisez vos PDFs : **sans pixellisation du texte et des images**, traits de coupe et fonds perdus supprimés.")
     
     # Détection des dépendances (résultats cachés)
@@ -412,14 +412,6 @@ def main() -> None:
         st.session_state.uploader_key = f"pdf_uploader_{uuid.uuid4()}"
         st.rerun()
 
-    if st.session_state.queue:
-        st.write(f"**{len(st.session_state.queue)} fichier(s) en attente**")
-        st.dataframe(
-            [{"📄 Fichier": item["name"], "Poids": f"{round(len(item['data']) / 1024, 1)} KB"} for item in st.session_state.queue],
-            width="stretch",
-            height=200,
-        )
-
     group_mode = st.checkbox("🔗 Regrouper les PDFs par nom (_01, _02… fusionnés)", value=False, help="Fusionne les pages numérotées en un seul PDF")
 
     # Build selected profiles
@@ -531,7 +523,8 @@ def main() -> None:
                         data=zip_buf,
                         file_name="LightPDF_outputs.zip",
                         mime="application/zip",
-                        use_container_width=True
+                        use_container_width=True,
+                        key="download_all_zip"
                     )
                     st.write("---")
                 
@@ -542,7 +535,8 @@ def main() -> None:
                         data=p.read_bytes(),
                         file_name=p.name,
                         mime="application/pdf",
-                        use_container_width=True
+                        use_container_width=True,
+                        key=f"download_{p.name}"
                     )
             else:
                 st.info("Aucun fichier généré à proposer en téléchargement.")
