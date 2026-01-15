@@ -561,6 +561,10 @@ def compress_images_only_pdf(input_pdf: Path, output_pdf: Path, profile: Compres
     Recompress PDF while preserving vectors using qpdf + stream optimization.
     Avoids pikepdf issues by using proven qpdf-only approach.
     """
+    qpdf_bin = find_qpdf()
+    if not qpdf_bin:
+        raise RuntimeError("qpdf est requis pour ce profil. Installez via: brew install qpdf")
+    
     output_pdf.parent.mkdir(parents=True, exist_ok=True)
     
     # Use qpdf to compress streams with the specified DPI/quality
@@ -569,7 +573,7 @@ def compress_images_only_pdf(input_pdf: Path, output_pdf: Path, profile: Compres
     
     # Build qpdf command with aggressive stream compression
     qpdf_cmd = [
-        "qpdf",
+        str(qpdf_bin),
         "--stream-data=compress",
         "--recompress-streams=y",
         "--compression-level=9",
