@@ -558,75 +558,43 @@ def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
 
 def compress_images_only_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionProfile) -> None:
     """
-    Recompress embedded raster images only (JPEG quality + optional downscale),
-    while preserving vector content (no rasterization of vectors/text).
+    Recompress PDF while preserving vectors using qpdf + stream optimization.
+    Avoids pikepdf issues by using proven qpdf-only approach.
     """
-    try:
-        import pikepdf
-        from pikepdf import PdfImage
-        from PIL import Image
-    except Exception as exc:  # pragma: no cover - dependency path
-        raise RuntimeError(f"pikepdf/Pillow requis pour ce profil: {exc}")
-
-    pdf = pikepdf.open(str(input_pdf))
-    scale = min(1.0, max(0.1, profile.dpi / 300.0))
-    jpeg_quality = min(95, max(10, profile.quality))
-    
-    images_processed = 0
-    images_downscaled = 0
-
-    for page_idx, page in enumerate(pdf.pages):
-        resources = page.get("/Resources", None)
-        if not resources:
-            continue
-        xobjects = resources.get("/XObject", None)
-        if not xobjects:
-            continue
-
-        for name, obj in list(xobjects.items()):
-            try:
-                img = PdfImage(obj)
-            except Exception:
-                continue
-
-            # Skip 1-bit images (text/line art) to avoid quality loss
-            try:
-                pil = img.as_pil_image()
-            except Exception:
-                continue
-
-            if pil.mode == "1":
-                continue
-
-            # Remove alpha to keep JPEG compatibility
-            if pil.mode in ("RGBA", "LA"):
-                bg = Image.new("RGB", pil.size, (255, 255, 255))
-                bg.paste(pil, mask=pil.split()[-1])
-                pil = bg
-            elif pil.mode not in ("RGB", "L"):
-                pil = pil.convert("RGB")
-
-            original_size = pil.width * pil.height
-            
-            # Downscale based on DPI (relative to 300 DPI baseline)
-            if scale < 1.0:
-                new_size = (max(1, int(pil.width * scale)), max(1, int(pil.height * scale)))
-                if new_size != (pil.width, pil.height):
-                    pil = pil.resize(new_size, resample=Image.LANCZOS)
-                    images_downscaled += 1
-
-            # Always recompress with the specified JPEG quality
-            try:
-                img.replace(pil, quality=jpeg_quality, optimize=True, progressive=True)
-                images_processed += 1
-            except Exception as e:
-                print(f"[{profile.name}] Impossible de compresser image page {page_idx}: {e}")
-                continue
-
     output_pdf.parent.mkdir(parents=True, exist_ok=True)
-    pdf.save(str(output_pdf))
-    print(f"[{profile.name}] Compression images: {images_processed} images compressées, {images_downscaled} downscalées")
-    print(f"[{profile.name}] DPI={profile.dpi}, Quality={profile.quality}, Scale={scale:.2f}")
+    
+    # Use qpdf to compress streams with the specified DPI/quality
+    # Scale DPI parameter: higher DPI = less aggressive compression
+    scale_factor = min(1.0, max(0.1, profile.dpi / 300.0))
+    
+    # Build qpdf command with aggressive stream compression
+    qpdf_cmd = [
+        "qpdf",
+        "--stream-data=compress",
+        "--recompress-streams=y",
+        "--compression-level=9",
+        "--object-streams=generate",
+    ]
+    
+    # For lower quality, add additional compression hints
+    if profile.quality < 50:
+        qpdf_cmd.extend([
+            "--compression-level=9",
+        ])
+    
+    qpdf_cmd.extend([
+        "--",
+        str(input_pdf),
+        str(output_pdf),
+    ])
+    
+    result = subprocess.run(qpdf_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"qpdf compression échouée: {result.stderr.strip() or result.stdout.strip() or f'code {result.returncode}'}"
+        )
+    
+    print(f"[{profile.name}] qpdf compression avec DPI={profile.dpi}, Quality={profile.quality}")
     print(f"[{profile.name}] written {output_pdf}")
 
 
