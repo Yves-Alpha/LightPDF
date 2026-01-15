@@ -558,7 +558,8 @@ def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
 
 def compress_images_only_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionProfile) -> None:
     """
-    Recompress PDF while preserving vectors using qpdf + stream compression.
+    Recompress PDF while preserving vectors using qpdf.
+    Falls back to simple copy if qpdf fails.
     """
     qpdf_bin = find_qpdf()
     if not qpdf_bin:
@@ -566,26 +567,29 @@ def compress_images_only_pdf(input_pdf: Path, output_pdf: Path, profile: Compres
     
     output_pdf.parent.mkdir(parents=True, exist_ok=True)
     
-    # Build qpdf command with compatible options for older qpdf versions
-    qpdf_cmd = [
-        str(qpdf_bin),
-        "--stream-data=compress",
-        "--compress-streams",
+    # Try progressively simpler qpdf commands (for compatibility with old versions)
+    strategies = [
+        # Strategy 1: Stream compression (most aggressive)
+        [str(qpdf_bin), "--stream-data=compress", "--", str(input_pdf), str(output_pdf)],
+        # Strategy 2: Linearize only
+        [str(qpdf_bin), "--linearize", "--", str(input_pdf), str(output_pdf)],
+        # Strategy 3: No options (just rewrite, which can compress)
+        [str(qpdf_bin), "--", str(input_pdf), str(output_pdf)],
     ]
     
-    qpdf_cmd.extend([
-        "--",
-        str(input_pdf),
-        str(output_pdf),
-    ])
+    errors = []
+    for idx, qpdf_cmd in enumerate(strategies):
+        result = subprocess.run(qpdf_cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            strategy_name = ["stream-compress", "linearize", "basic rewrite"][idx]
+            print(f"[{profile.name}] qpdf {strategy_name} (DPI={profile.dpi}, Quality={profile.quality})")
+            print(f"[{profile.name}] written {output_pdf}")
+            return
+        errors.append(f"Strategy {idx}: {result.stderr.strip() or result.stdout.strip()}")
     
-    result = subprocess.run(qpdf_cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"qpdf compression échouée: {result.stderr.strip() or result.stdout.strip() or f'code {result.returncode}'}"
-        )
-    
-    print(f"[{profile.name}] qpdf compression avec DPI={profile.dpi}, Quality={profile.quality}")
+    # All qpdf strategies failed, try copying as fallback
+    print(f"[{profile.name}] qpdf failed, using direct copy (no compression)")
+    shutil.copy2(input_pdf, output_pdf)
     print(f"[{profile.name}] written {output_pdf}")
 
 
