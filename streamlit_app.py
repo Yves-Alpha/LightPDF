@@ -306,8 +306,7 @@ def main() -> None:
             st.session_state["profiles"] = {
                 "hq": {"enabled": False, "dpi": 300, "q": 92, "vector": False},
                 "lite": {"enabled": False, "dpi": 150, "q": 78, "vector": False},
-                "vector_hq": {"enabled": True, "dpi": 150, "q": 85, "vector": True},
-                "vector_mix": {"enabled": False, "dpi": 150, "q": 75, "vector": True},
+                "vector_mix": {"enabled": True, "dpi": 150, "q": 75, "vector": True},
             }
         
         # Section de sélection du dossier de destination
@@ -317,15 +316,14 @@ def main() -> None:
         
         # Initialiser la sélection de profil s'il n'existe pas
         if "selected_profile" not in st.session_state:
-            st.session_state["selected_profile"] = "vector_hq"
+            st.session_state["selected_profile"] = "vector_mix"
         
         # Radio button pour la sélection unique
         selected = st.radio(
             "Sélectionnez un seul profil :",
-            options=["vector_hq", "vector_mix", "lite", "hq"],
+            options=["vector_mix", "lite", "hq"],
             format_func=lambda x: {
-                "vector_hq": "🪶 Préserver les vecteurs (sans rasterisation)",
-                "vector_mix": "🧩 Vecteurs + images compressées (sans rasterisation)",
+                "vector_mix": "🪶 Vecteurs nets + images léger",
                 "lite": "💾 Très léger – Poids réduit au maximum",
                 "hq": "⚙️ Impression professionnelle – Meilleure qualité (lourd)"
             }[x],
@@ -333,18 +331,12 @@ def main() -> None:
         )
         
         # Mettre à jour les profils : désactiver les autres, activer le sélectionné
-        st.session_state["profiles"]["vector_hq"]["enabled"] = (selected == "vector_hq")
         st.session_state["profiles"]["vector_mix"]["enabled"] = (selected == "vector_mix")
         st.session_state["profiles"]["lite"]["enabled"] = (selected == "lite")
         st.session_state["profiles"]["hq"]["enabled"] = (selected == "hq")
         
         # Afficher les options du profil sélectionné
-        if selected == "vector_hq":
-            st.info("Ce profil préserve 100% des vecteurs. Compression sans perte (DPI/Qualité ignorés).")
-            if not qpdf_ok:
-                st.warning("⚠️ Ce profil nécessite qpdf. Installez via : `brew install qpdf`")
-
-        elif selected == "vector_mix":
+        if selected == "vector_mix":
             col1, col2 = st.columns(2)
             with col1:
                 st.session_state.profiles["vector_mix"]["dpi"] = st.slider(
@@ -362,7 +354,7 @@ def main() -> None:
                     key="vector_mix_q",
                     help="Qualité JPEG des images raster uniquement."
                 )
-            st.info("Ce profil compresse uniquement les images raster et conserve les vecteurs.")
+            st.info("✨ Vecteurs préservés intactes. Les images raster sont compressées selon DPI/Qualité.")
         
         elif selected == "lite":
             lite_state = st.session_state["profiles"]["lite"]
@@ -441,10 +433,6 @@ def main() -> None:
         profiles.append(
             CompressionProfile("Light", dpi=int(prof_state["lite"]["dpi"]), quality=int(prof_state["lite"]["q"]), use_vector_compression=False)
         )
-    if prof_state.get("vector_hq", {}).get("enabled"):
-        profiles.append(
-            CompressionProfile("Vector-HQ", dpi=int(prof_state["vector_hq"]["dpi"]), quality=int(prof_state["vector_hq"]["q"]), use_vector_compression=True)
-        )
     if prof_state.get("vector_mix", {}).get("enabled"):
         profiles.append(
             CompressionProfile("Vector-IMG", dpi=int(prof_state["vector_mix"]["dpi"]), quality=int(prof_state["vector_mix"]["q"]), use_vector_compression=True, image_only=True)
@@ -460,7 +448,6 @@ def main() -> None:
     needs_poppler = any(not p.use_vector_compression for p in profiles)
     needs_ghostscript = flatten_enabled
     has_outputs = bool(profiles) or flatten_enabled
-    needs_qpdf = any(p.use_vector_compression and p.name == "Vector-HQ" for p in profiles)
 
     if not poppler_ok and needs_poppler:
         st.error("Poppler/pdftoppm n'est pas installé. Requis pour HQ/Light. Sur Streamlit Cloud, vérifie `packages.txt` (poppler-utils) puis redeploie.")
@@ -473,7 +460,6 @@ def main() -> None:
         (not st.session_state.queue)
         or (needs_poppler and not poppler_ok)
         or (needs_ghostscript and not ghostscript_ok)
-        or (needs_qpdf and not qpdf_ok)
         or (not has_outputs)
     )
 
