@@ -364,10 +364,10 @@ def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
     img_res = profile.dpi  # Use DPI from profile directly
     jpeg_quality = min(95, max(10, profile.quality))  # Clamp quality to 10-95 range
     
-    # Downsampling: DISABLED for Vector profile (to preserve vectors), ENABLED for others
+    # Downsampling: ENABLED for all profiles to compress images, but preserve vectors
     # DPI tells Ghostscript the target resolution, downsample flag enables downsampling
-    downsample_color = "false" if profile.name == "Vector-HQ" else ("true" if profile.name != "HQ" else "false")
-    downsample_gray = "false" if profile.name == "Vector-HQ" else ("true" if profile.name != "HQ" else "false")
+    downsample_color = "true" if profile.name != "HQ" else "false"
+    downsample_gray = "true" if profile.name != "HQ" else "false"
     
     # sRGB conversion for file size reduction (except for HQ profile)
     use_srgb = profile.name != "HQ"
@@ -484,27 +484,31 @@ def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
             print(f"[{profile.name}] DPI={profile.dpi}, quality={profile.quality}")
             if use_srgb:
                 print(f"[{profile.name}] sRGB conversion applied")
-            print(f"[{profile.name}] written {output_pdf}")
             
-            # Post-processing for sRGB: Use qpdf to force color space conversion if needed
-            if use_srgb:
-                try:
-                    # qpdf can rewrite color spaces - convert any remaining CMYK to RGB
-                    temp_output = Path(str(output_pdf) + ".tmp.pdf")
-                    qpdf_cmd = [
-                        "qpdf",
-                        "--stream-data=uncompress",  # Uncompress streams to see color directives
-                        "--",
-                        str(output_pdf),
-                        str(temp_output)
-                    ]
-                    result = subprocess.run(qpdf_cmd, capture_output=True, text=True, timeout=60)
-                    if result.returncode == 0:
-                        temp_output.replace(output_pdf)
-                        print(f"[{profile.name}] Color space post-processing applied with qpdf")
-                except (FileNotFoundError, subprocess.TimeoutExpired):
-                    # qpdf not available, continue with GS output only
-                    pass
+            # Post-compression: Apply qpdf compression to truly reduce file size
+            try:
+                temp_output = Path(str(output_pdf) + ".tmp.pdf")
+                qpdf_cmd = [
+                    "qpdf",
+                    "--recompress-streams=y",  # Recompress all streams
+                    "--compress-streams=y",    # Compress streams
+                    "--object-streams=generate",  # Generate object streams for better compression
+                    "--",
+                    str(output_pdf),
+                    str(temp_output)
+                ]
+                qpdf_result = subprocess.run(qpdf_cmd, capture_output=True, text=True, timeout=60)
+                if qpdf_result.returncode == 0:
+                    temp_output.replace(output_pdf)
+                    print(f"[{profile.name}] Post-compression with qpdf applied")
+                else:
+                    # qpdf failed but GS succeeded, continue with GS output
+                    print(f"[{profile.name}] qpdf compression failed, using GS output as-is")
+            except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+                # qpdf not available, continue with GS output only
+                print(f"[{profile.name}] qpdf not available for post-compression")
+            
+            print(f"[{profile.name}] written {output_pdf}")
             return
         
         error_msg = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
