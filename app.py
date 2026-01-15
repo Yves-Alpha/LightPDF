@@ -364,10 +364,10 @@ def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
     img_res = profile.dpi  # Use DPI from profile directly
     jpeg_quality = min(95, max(10, profile.quality))  # Clamp quality to 10-95 range
     
-    # Downsampling: ENABLED for compression (except HQ profile)
+    # Downsampling: DISABLED for Vector profile (to preserve vectors), ENABLED for others
     # DPI tells Ghostscript the target resolution, downsample flag enables downsampling
-    downsample_color = "true" if profile.name != "HQ" else "false"
-    downsample_gray = "true" if profile.name != "HQ" else "false"
+    downsample_color = "false" if profile.name == "Vector-HQ" else ("true" if profile.name != "HQ" else "false")
+    downsample_gray = "false" if profile.name == "Vector-HQ" else ("true" if profile.name != "HQ" else "false")
     
     # sRGB conversion for file size reduction (except for HQ profile)
     use_srgb = profile.name != "HQ"
@@ -423,7 +423,7 @@ def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
             
             # Gradient and blend settings
             "-dBlendColorSpace=/DeviceRGB",
-            "-dAlignToPixels=1",
+            "-dAlignToPixels=0",  # Keep vectors sharp, not pixel-aligned (was causing pixelization)
             
             f"-sOutputFile={output_pdf}",
             str(input_pdf),

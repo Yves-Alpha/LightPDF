@@ -296,7 +296,7 @@ def main() -> None:
             st.session_state["profiles"] = {
                 "hq": {"enabled": False, "dpi": 300, "q": 92, "vector": False},
                 "lite": {"enabled": False, "dpi": 150, "q": 78, "vector": False},
-                "vector_hq": {"enabled": True, "dpi": 96, "q": 80, "vector": True},
+                "vector_hq": {"enabled": True, "dpi": 150, "q": 85, "vector": True},
             }
         
         # Section de sélection du dossier de destination
@@ -486,7 +486,7 @@ def main() -> None:
                                 except Exception as exc:  # pragma: no cover - UI feedback path
                                     st.error(f"{base_name} : échec de l'aplat vectoriel ({exc})")
                             for profile in profiles:
-                                out_pdf = out_dir / f"{base_name}.pdf"
+                                out_pdf = out_dir / f"{base_name}-{profile.name}.pdf"
                                 if profile.use_vector_compression:
                                     vector_compress_pdf(clean_path, out_pdf, profile)
                                 else:
