@@ -33,10 +33,8 @@ from app import (  # noqa: E402
     CompressionProfile,
     clean_pdf,
     compress_images_only_pdf,
-    flatten_transparency_pdf,
     find_qpdf,
     has_ghostscript,
-    raster_compress_pdf,
     vector_compress_pdf,
     warn_pdftoppm,
 )
@@ -112,7 +110,6 @@ def process_queue(
     output_dir: Path,
     bleed_mm: float,
     profiles: List[CompressionProfile],
-    flatten: bool,
 ) -> list[dict]:
     results = []
     total = len(st.session_state.queue)
@@ -129,23 +126,9 @@ def process_queue(
             clean_path = Path(tmpdir) / f"{base}-clean.pdf"
             clean_pdf(tmp_pdf, clean_path, bleed_mm=bleed_mm)
             outputs = []
-            if flatten:
-                flat_pdf = output_dir / f"{base}.pdf"
-                try:
-                    method = flatten_transparency_pdf(clean_path, flat_pdf)
-                    outputs.append(str(flat_pdf))
-                    if method != "gs compat 1.3":
-                        st.warning(f"{name} : aplat vectoriel via '{method}' (fallback). Vérifier le rendu.")
-                except Exception as exc:  # pragma: no cover - UI feedback path
-                    st.error(f"{name} : échec de l'aplat vectoriel ({exc})")
             for profile in profiles:
                 out_pdf = output_dir / f"{base}-{profile.name}.pdf"
-                if profile.image_only:
-                    compress_images_only_pdf(clean_path, out_pdf, profile)
-                elif profile.use_vector_compression:
-                    vector_compress_pdf(clean_path, out_pdf, profile)
-                else:
-                    raster_compress_pdf(clean_path, out_pdf, profile)
+                vector_compress_pdf(clean_path, out_pdf, profile)
                 outputs.append(str(out_pdf))
             results.append({"name": base, "outputs": outputs})
         progress.progress(idx / total, text=f"{name} : terminé ({idx}/{total})")
@@ -292,8 +275,6 @@ def main() -> None:
         qpdf_ok = False
 
     _init_queue()
-    if "flatten_enabled" not in st.session_state:
-        st.session_state["flatten_enabled"] = False
     if "uploader_key" not in st.session_state:
         st.session_state["uploader_key"] = f"pdf_uploader_{uuid.uuid4()}"
 
@@ -305,8 +286,8 @@ def main() -> None:
         if "profiles" not in st.session_state:
             st.session_state["profiles"] = {
                 "hq": {"enabled": False, "dpi": 300, "q": 92, "vector": False},
-                "lite": {"enabled": False, "dpi": 150, "q": 78, "vector": False},
-                "vector_mix": {"enabled": True, "dpi": 150, "q": 75, "vector": True},
+                "lite": {"enabled": True, "dpi": 96, "q": 80, "vector": False},
+                "vector_mix": {"enabled": False, "dpi": 150, "q": 75, "vector": True},
             }
         
         # Section de sélection du dossier de destination
@@ -399,14 +380,7 @@ def main() -> None:
             
             st.markdown("---")
             st.write("**Options spéciales**")
-            flat_enabled = st.checkbox(
-                "🔄 Aplatir les transparences (sans pixellisation)",
-                value=st.session_state["flatten_enabled"],
-                help="Fusionne les calques de transparence tout en conservant le texte et vecteurs nets.",
-            )
-            st.session_state["flatten_enabled"] = flat_enabled
-            if flat_enabled and not ghostscript_ok:
-                st.warning("⚠️ Nécessite Ghostscript. Installez via : `brew install ghostscript`")
+            # Flatten transparency option removed - using simple qpdf compression instead
 
     uploader_key = st.session_state["uploader_key"]
     st.markdown("---")
@@ -444,22 +418,17 @@ def main() -> None:
         for p in profiles:
             st.write(f"- {p.name}: DPI={p.dpi}, Quality={p.quality}, Vector={p.use_vector_compression}")
 
-    flatten_enabled = bool(st.session_state.get("flatten_enabled", False))
     needs_poppler = any(not p.use_vector_compression for p in profiles)
-    needs_ghostscript = flatten_enabled
-    has_outputs = bool(profiles) or flatten_enabled
+    has_outputs = bool(profiles)
 
     if not poppler_ok and needs_poppler:
         st.error("Poppler/pdftoppm n'est pas installé. Requis pour HQ/Light. Sur Streamlit Cloud, vérifie `packages.txt` (poppler-utils) puis redeploie.")
     elif not poppler_ok and not needs_poppler:
         st.info("Poppler/pdftoppm n'est pas installé. Active un profil HQ/Light après installation (brew install poppler ou `packages.txt` → poppler-utils).")
-    if needs_ghostscript and not ghostscript_ok:
-        st.error("Ghostscript (gs) est requis pour l'option vectorielle. Sur Streamlit Cloud, ajoute `ghostscript` dans `packages.txt` puis redeploie (déjà présent si repo à jour).")
 
     start_disabled = (
         (not st.session_state.queue)
         or (needs_poppler and not poppler_ok)
-        or (needs_ghostscript and not ghostscript_ok)
         or (not has_outputs)
     )
 
@@ -484,29 +453,15 @@ def main() -> None:
                             clean_path = Path(tmpclean) / f"{base_name}-clean.pdf"
                             clean_pdf(merged, clean_path, bleed_mm=bleed_mm)
                             outputs = []
-                            if flatten_enabled:
-                                flat_out = out_dir / f"{base_name}.pdf"
-                                try:
-                                    method = flatten_transparency_pdf(clean_path, flat_out)
-                                    outputs.append(str(flat_out))
-                                    if method != "gs compat 1.3":
-                                        st.warning(f"{base_name} : aplat vectoriel via '{method}' (fallback). Vérifier le rendu.")
-                                except Exception as exc:  # pragma: no cover - UI feedback path
-                                    st.error(f"{base_name} : échec de l'aplat vectoriel ({exc})")
                             for profile in profiles:
                                 out_pdf = out_dir / f"{base_name}-{profile.name}.pdf"
-                                if profile.image_only:
-                                    compress_images_only_pdf(clean_path, out_pdf, profile)
-                                elif profile.use_vector_compression:
-                                    vector_compress_pdf(clean_path, out_pdf, profile)
-                                else:
-                                    raster_compress_pdf(clean_path, out_pdf, profile)
+                                vector_compress_pdf(clean_path, out_pdf, profile)
                                 outputs.append(str(out_pdf))
                             results.append({"name": base_name, "outputs": outputs})
                         tmpdir_merge.cleanup()
                     st.session_state.queue = []
                 else:
-                    results = process_queue(out_dir, bleed_mm=bleed_mm, profiles=profiles, flatten=flatten_enabled)
+                    results = process_queue(out_dir, bleed_mm=bleed_mm, profiles=profiles)
             
             st.success("✅ Optimisation terminée !")
             
