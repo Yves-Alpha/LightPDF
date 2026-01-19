@@ -226,9 +226,8 @@ def clean_pdf(input_pdf: Path, output_pdf: Path, bleed_mm: float) -> None:
 
 def flatten_transparency_pdf(input_pdf: Path, output_pdf: Path, allow_fallback_14: bool = True) -> str:
     """
-    Flatten transparencies using Ghostscript while keeping vector data.
+    Flatten transparencies using Ghostscript with MINIMAL, SAFE parameters.
     Returns the label of the method that succeeded.
-    Implements multiple fallback strategies to handle problematic PDFs.
     """
     gs_bin = find_ghostscript()
     if not gs_bin:
@@ -236,330 +235,89 @@ def flatten_transparency_pdf(input_pdf: Path, output_pdf: Path, allow_fallback_1
 
     output_pdf.parent.mkdir(parents=True, exist_ok=True)
     
-    def _run(cmd: list[str]) -> tuple[int, str]:
-        res = subprocess.run(cmd, capture_output=True, text=True)
-        return res.returncode, (res.stderr.strip() or res.stdout.strip() or "")
-
-    errors: list[str] = []
-    
-    # Strategy 1: Standard compression parameters
-    base_cmd_standard = [
+    # SINGLE STRATEGY: Minimal, safe Ghostscript parameters
+    # No color conversion, no advanced device properties
+    cmd = [
         str(gs_bin),
         "-dBATCH",
         "-dNOPAUSE",
         "-dSAFER",
         "-sDEVICE=pdfwrite",
-        "-dDetectDuplicateImages=true",
-        "-dCompressFonts=true",
-        "-dSubsetFonts=true",
-        "-dColorImageDownsampleType=/None",
-        "-dGrayImageDownsampleType=/None",
-        "-dMonoImageDownsampleType=/None",
+        "-dCompatibilityLevel=1.4",
         "-dAutoRotatePages=/None",
+        f"-sOutputFile={output_pdf}",
+        str(input_pdf),
     ]
     
-    attempts_standard: list[tuple[str, list[str]] | None] = [
-        ("gs compat 1.3", ["-dCompatibilityLevel=1.3"]),
-        ("gs compat 1.4", ["-dCompatibilityLevel=1.4"]) if allow_fallback_14 else None,
-        ("gs compat 1.3 + override ICC", ["-dCompatibilityLevel=1.3", "-dOverrideICC", "-dUseFastColor=true"]),
-        ("gs compat 1.4 + override ICC", ["-dCompatibilityLevel=1.4", "-dOverrideICC", "-dUseFastColor=true"])
-        if allow_fallback_14
-        else None,
-    ]
-    attempts_standard = [a for a in attempts_standard if a is not None]  # type: ignore
-
-    for label, extra in attempts_standard:  # type: ignore
-        cmd = [*base_cmd_standard, *extra, f"-sOutputFile={output_pdf}", str(input_pdf)]
-        code, msg = _run(cmd)
-        if code == 0:
-            print(f"[FLAT] written {output_pdf} ({label})")
-            return label
-        errors.append(f"{label}: {msg or f'code {code}'}")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode == 0:
+        print(f"[FLAT] written {output_pdf}")
+        return "gs basic"
     
-    # Strategy 2: Minimal parameters (to fix rangecheck errors)
-    base_cmd_minimal = [
-        str(gs_bin),
-        "-dBATCH",
-        "-dNOPAUSE",
-        "-dSAFER",
-        "-sDEVICE=pdfwrite",
-        "-dCompatibilityLevel=1.3",
-        "-dCompressFonts=true",
-        "-dAutoRotatePages=/None",
-    ]
-    
-    cmd_minimal = [*base_cmd_minimal, f"-sOutputFile={output_pdf}", str(input_pdf)]
-    code, msg = _run(cmd_minimal)
-    if code == 0:
-        print(f"[FLAT] written {output_pdf} (minimal parameters)")
-        return "minimal parameters"
-    errors.append(f"minimal parameters: {msg or f'code {code}'}")
-    
-    # Strategy 3: qpdf rewrite then minimal gs
-    qpdf_bin = find_qpdf()
-    if qpdf_bin:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            qpdf_out = Path(tmpdir) / "qpdf_clean.pdf"
-            conv = subprocess.run(
-                [
-                    str(qpdf_bin),
-                    "--object-streams=disable",
-                    "--stream-data=uncompress",
-                    str(input_pdf),
-                    str(qpdf_out),
-                ],
-                capture_output=True,
-                text=True,
-            )
-            if conv.returncode == 0 and qpdf_out.exists():
-                cmd_qpdf_gs = [*base_cmd_minimal, f"-sOutputFile={output_pdf}", str(qpdf_out)]
-                code4, msg4 = _run(cmd_qpdf_gs)
-                if code4 == 0:
-                    print(f"[FLAT] written {output_pdf} (qpdf+gs minimal)")
-                    return "qpdf+gs minimal"
-                errors.append(f"qpdf+gs minimal: {msg4 or f'code {code4}'}")
-            else:
-                errors.append(f"qpdf: {conv.stderr.strip() or conv.stdout.strip() or f'code {conv.returncode}'}")
-
-    # Strategy 4: pdftops -> PS -> gs with minimal parameters
-    pdftops = find_pdftops()
-    if pdftops:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            ps_path = Path(tmpdir) / "flatten.ps"
-            conv = subprocess.run([str(pdftops), str(input_pdf), str(ps_path)], capture_output=True, text=True)
-            if conv.returncode == 0 and ps_path.exists():
-                cmd_ps = [*base_cmd_minimal, f"-sOutputFile={output_pdf}", str(ps_path)]
-                code3, msg3 = _run(cmd_ps)
-                if code3 == 0:
-                    print(f"[FLAT] written {output_pdf} (pdftops+gs minimal)")
-                    return "pdftops+gs minimal"
-                errors.append(f"pdftops+gs minimal: {msg3 or f'code {code3}'}")
-            else:
-                errors.append(f"pdftops: {conv.stderr.strip() or conv.stdout.strip() or f'code {conv.returncode}'}")
-
-    raise RuntimeError("Ghostscript a échoué. " + " | ".join(errors))
+    error_msg = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
+    raise RuntimeError(f"Ghostscript a échoué: {error_msg}")
 
 
 
 def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionProfile) -> None:
     """
-    Compress PDF keeping text and vector elements intact using Ghostscript.
-    This prevents pixellation unlike rasterization.
-    Optimized to preserve shadows and soft effects properly.
-    
-    Parameters:
-    - input_pdf: source PDF file
-    - output_pdf: destination PDF file
-    - profile: compression settings (quality 1-95, where 95 = highest quality, 10 = maximum compression)
-               dpi: image resolution for downsampling (e.g., 150-300 DPI)
+    Compress PDF safely using qpdf or minimal Ghostscript.
+    For Vector profiles: use qpdf to preserve vectors without rasterization.
+    For other profiles: use simple GS command without complex device properties.
     """
-    gs_bin = find_ghostscript()
-    if not gs_bin:
-        raise RuntimeError("Ghostscript est requis pour la compression vectorielle.")
-
-    # True vector-safe path: for Vector-HQ, avoid Ghostscript compression (it can rasterize).
-    # Use qpdf to recompress streams without altering vector content.
-    if profile.name == "Vector-HQ":
-        output_pdf.parent.mkdir(parents=True, exist_ok=True)
+    output_pdf.parent.mkdir(parents=True, exist_ok=True)
+    
+    # STRATEGY: Use qpdf for maximum safety (no rasterization, no distortion)
+    # qpdf is safe, fast, and doesn't cause aberrations
+    qpdf_bin = find_qpdf()
+    if qpdf_bin:
         qpdf_cmd = [
-            "qpdf",
+            str(qpdf_bin),
             "--stream-data=compress",
             "--recompress-streams=y",
-            "--object-streams=generate",
             "--compression-level=9",
             "--",
             str(input_pdf),
             str(output_pdf),
         ]
         result = subprocess.run(qpdf_cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise RuntimeError(
-                "qpdf est requis pour Vector-HQ (préserver les vecteurs). "
-                f"Détail: {result.stderr.strip() or result.stdout.strip() or 'échec qpdf'}"
-            )
-        print(f"[{profile.name}] qpdf recompress (vectors preserved) -> {output_pdf}")
-        return
+        if result.returncode == 0:
+            print(f"[{profile.name}] qpdf recompress -> {output_pdf}")
+            return
+        # If qpdf fails, fall through to Ghostscript
+        print(f"[{profile.name}] qpdf failed, using Ghostscript")
     
-    output_pdf.parent.mkdir(parents=True, exist_ok=True)
+    # FALLBACK: Minimal Ghostscript with safe parameters
+    # This is intentionally simple - no color conversion, no advanced options
+    gs_bin = find_ghostscript()
+    if not gs_bin:
+        raise RuntimeError("qpdf or Ghostscript is required for compression.")
     
-    # Use profile DPI and quality directly
-    # DPI: controls image resolution (higher = larger file, crisper)
-    # quality: controls JPEG compression of images (higher = larger file, better quality)
-    img_res = profile.dpi  # Use DPI from profile directly
-    jpeg_quality = min(95, max(10, profile.quality))  # Clamp quality to 10-95 range
-    
-    # Downsampling: DISABLED for Vector profile (to preserve vectors), ENABLED for others
-    # DPI tells Ghostscript the target resolution, downsample flag enables downsampling
-    downsample_color = "false" if profile.name == "Vector-HQ" else ("true" if profile.name != "HQ" else "false")
-    downsample_gray = "false" if profile.name == "Vector-HQ" else ("true" if profile.name != "HQ" else "false")
-    
-    # sRGB conversion for file size reduction (except for HQ profile)
-    use_srgb = profile.name != "HQ"
-    
-    # Strategy 1: Full-featured compression with all optimizations
-    def _build_full_cmd() -> list[str]:
-        return [
-            str(gs_bin),
-            "-dBATCH",
-            "-dNOPAUSE",
-            "-dSAFER",
-            "-sDEVICE=pdfwrite",
-            "-dCompatibilityLevel=1.3",  # Force PDF 1.3 for better compression and compatibility
-            # Core settings - preserve vector and soft effects
-            "-dDetectDuplicateImages=true",
-            "-dCompressFonts=true",
-            "-dSubsetFonts=true",
-            "-dEmbedAllFonts=true",
-            
-            # Image quality settings - CRITICAL for compression
-            f"-dColorImageDownsampleType=/Bicubic",
-            f"-dGrayImageDownsampleType=/Bicubic",
-            f"-dMonoImageDownsampleType=/Bicubic",
-            f"-dColorImageResolution={img_res}",
-            f"-dGrayImageResolution={img_res}",
-            f"-dMonoImageResolution={img_res}",
-            f"-dDownsampleColorImages={downsample_color}",
-            f"-dDownsampleGrayImages={downsample_gray}",
-            f"-dDownsampleMonoImages=false",
-            
-            # JPEG compression for images (critical for file size)
-            # Lower quality = more compression, smaller file
-            f"-dJPEGQ={jpeg_quality}",
-            
-            # Stream compression
-            "-dCompressStreams=true",
-            
-            # Preserve anti-aliasing and soft edges
-            "-dAntiAliasGrayImages=true",
-            "-dAntiAliasColorImages=true",
-            "-dAntiAliasMonoImages=true",
-            
-            # Transparency and rendering
-            "-dAutoRotatePages=/None",
-            "-dPreserveHalftoneInfo=false",
-            "-dPreserveOverprintSettings=true",
-            "-dTransferFunctionInfo=/Preserve",
-            "-dUseFastColor=false",  # Use slower but more accurate color
-            
-            # Color conversion
-            ("-dProcessColorModel=/DeviceRGB" if use_srgb else "-dColorConversionStrategy=/LeaveColorUnchanged"),
-            ("-dColorConversionStrategy=/RGB" if use_srgb else "-dProcessColorModel=/DeviceCMYK"),
-            
-            # Gradient and blend settings
-            "-dBlendColorSpace=/DeviceRGB",
-            "-dAlignToPixels=0",  # Keep vectors sharp, not pixel-aligned (was causing pixelization)
-            
-            f"-sOutputFile={output_pdf}",
-            str(input_pdf),
-        ]
-    
-    # Strategy 2: Reduced parameters without problematic device properties
-    def _build_minimal_cmd() -> list[str]:
-        return [
-            str(gs_bin),
-            "-dBATCH",
-            "-dNOPAUSE",
-            "-dSAFER",
-            "-sDEVICE=pdfwrite",
-            "-dCompatibilityLevel=1.3",
-            "-dDetectDuplicateImages=true",
-            "-dCompressFonts=true",
-            "-dSubsetFonts=true",
-            "-dEmbedAllFonts=true",
-            f"-dColorImageResolution={img_res}",
-            f"-dGrayImageResolution={img_res}",
-            f"-dJPEGQ={jpeg_quality}",
-            "-dCompressStreams=true",
-            "-dAutoRotatePages=/None",
-            f"-sOutputFile={output_pdf}",
-            str(input_pdf),
-        ]
-    
-    # Strategy 3: Ultra-safe with no color model parameters
-    def _build_safe_cmd() -> list[str]:
-        return [
-            str(gs_bin),
-            "-dBATCH",
-            "-dNOPAUSE",
-            "-dSAFER",
-            "-sDEVICE=pdfwrite",
-            "-dCompatibilityLevel=1.3",
-            "-dCompressFonts=true",
-            "-dSubsetFonts=true",
-            f"-dJPEGQ={jpeg_quality}",
-            "-dCompressStreams=true",
-            f"-sOutputFile={output_pdf}",
-            str(input_pdf),
-        ]
-    
-    # Try strategies in order
-    strategies = [
-        ("full-featured", _build_full_cmd),
-        ("minimal", _build_minimal_cmd),
-        ("ultra-safe", _build_safe_cmd),
+    cmd = [
+        str(gs_bin),
+        "-dBATCH",
+        "-dNOPAUSE",
+        "-dSAFER",
+        "-sDEVICE=pdfwrite",
+        "-dCompatibilityLevel=1.4",
+        "-dAutoRotatePages=/None",
+        f"-sOutputFile={output_pdf}",
+        str(input_pdf),
     ]
     
-    errors: list[str] = []
-    for strategy_name, builder in strategies:
-        cmd = builder()
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode == 0:
-            print(f"[{profile.name}] {input_pdf.name} compressed with GS using '{strategy_name}' strategy")
-            print(f"[{profile.name}] DPI={profile.dpi}, quality={profile.quality}")
-            if use_srgb:
-                print(f"[{profile.name}] sRGB conversion applied")
-            
-            # Post-compression: Apply aggressive qpdf compression to reduce file size
-            try:
-                temp_output = Path(str(output_pdf) + ".tmp.pdf")
-                qpdf_cmd = [
-                    "qpdf",
-                    "--stream-data=compress",     # Compress all streams with zlib
-                    "--recompress-streams=y",     # Force recompression
-                    "--object-streams=generate",  # Generate object streams for better compression
-                    "--compression-level=9",      # Maximum compression
-                    "--",
-                    str(output_pdf),
-                    str(temp_output)
-                ]
-                qpdf_result = subprocess.run(qpdf_cmd, capture_output=True, text=True, timeout=60)
-                if qpdf_result.returncode == 0:
-                    temp_output.replace(output_pdf)
-                    print(f"[{profile.name}] Aggressive qpdf post-compression applied")
-                else:
-                    # qpdf failed but GS succeeded, try simpler compression
-                    print(f"[{profile.name}] qpdf aggressive compression failed, trying simple compression...")
-                    qpdf_simple_cmd = [
-                        "qpdf",
-                        "--stream-data=compress",
-                        "--",
-                        str(output_pdf),
-                        str(temp_output)
-                    ]
-                    qpdf_simple = subprocess.run(qpdf_simple_cmd, capture_output=True, text=True, timeout=60)
-                    if qpdf_simple.returncode == 0:
-                        temp_output.replace(output_pdf)
-                        print(f"[{profile.name}] Simple qpdf compression applied")
-            except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-                # qpdf not available, continue with GS output only
-                print(f"[{profile.name}] qpdf not available for post-compression")
-            
-            print(f"[{profile.name}] written {output_pdf}")
-            return
-        
-        error_msg = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
-        errors.append(f"{strategy_name}: {error_msg}")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode == 0:
+        print(f"[{profile.name}] Ghostscript basic compression -> {output_pdf}")
+        return
     
-    # All strategies failed - report error
-    raise RuntimeError(
-        f"Ghostscript compression échouée (tous les stratégies):\n" + "\n".join(errors)
-    )
+    error_msg = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
+    raise RuntimeError(f"Compression failed for {input_pdf}: {error_msg}")
 
 
 def compress_images_only_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionProfile) -> None:
     """
     Recompress PDF while preserving vectors using qpdf.
-    Falls back to simple copy if qpdf fails.
+    Simple and safe - no Ghostscript tricks.
     """
     qpdf_bin = find_qpdf()
     if not qpdf_bin:
@@ -567,30 +325,23 @@ def compress_images_only_pdf(input_pdf: Path, output_pdf: Path, profile: Compres
     
     output_pdf.parent.mkdir(parents=True, exist_ok=True)
     
-    # Try progressively simpler qpdf commands (for compatibility with old versions)
-    strategies = [
-        # Strategy 1: Stream compression (most aggressive)
-        [str(qpdf_bin), "--stream-data=compress", "--", str(input_pdf), str(output_pdf)],
-        # Strategy 2: Linearize only
-        [str(qpdf_bin), "--linearize", "--", str(input_pdf), str(output_pdf)],
-        # Strategy 3: No options (just rewrite, which can compress)
-        [str(qpdf_bin), "--", str(input_pdf), str(output_pdf)],
+    # Single, stable qpdf command
+    qpdf_cmd = [
+        str(qpdf_bin),
+        "--stream-data=compress",
+        "--",
+        str(input_pdf),
+        str(output_pdf),
     ]
     
-    errors = []
-    for idx, qpdf_cmd in enumerate(strategies):
-        result = subprocess.run(qpdf_cmd, capture_output=True, text=True)
-        if result.returncode == 0:
-            strategy_name = ["stream-compress", "linearize", "basic rewrite"][idx]
-            print(f"[{profile.name}] qpdf {strategy_name} (DPI={profile.dpi}, Quality={profile.quality})")
-            print(f"[{profile.name}] written {output_pdf}")
-            return
-        errors.append(f"Strategy {idx}: {result.stderr.strip() or result.stdout.strip()}")
+    result = subprocess.run(qpdf_cmd, capture_output=True, text=True)
+    if result.returncode == 0:
+        print(f"[{profile.name}] qpdf compress")
+        print(f"[{profile.name}] written {output_pdf}")
+        return
     
-    # All qpdf strategies failed, try copying as fallback
-    print(f"[{profile.name}] qpdf failed, using direct copy (no compression)")
-    shutil.copy2(input_pdf, output_pdf)
-    print(f"[{profile.name}] written {output_pdf}")
+    error_msg = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
+    raise RuntimeError(f"qpdf compression failed: {error_msg}")
 
 
 
