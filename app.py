@@ -261,41 +261,24 @@ def flatten_transparency_pdf(input_pdf: Path, output_pdf: Path, allow_fallback_1
 
 def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionProfile) -> None:
     """
-    Compress PDF safely.
-    - For "Très légers": Use Ghostscript with MINIMAL parameters (just stream compression)
-    - For others: Use qpdf only
-    
-    NO rasterization, NO aberrations. Just safe stream compression.
+    Handle two profiles:
+    - "Nettoyer": just copy the cleaned PDF (no compression at all)
+    - "Très légers": rasterize to images for maximum compression
     """
     output_pdf.parent.mkdir(parents=True, exist_ok=True)
     
-    # For "Très légers" profile: use Ghostscript with MINIMAL safe parameters only
-    if profile.name == "Très légers":
-        gs_bin = find_ghostscript()
-        if gs_bin:
-            # MINIMAL Ghostscript - just compress streams, nothing fancy
-            # This reduces file size without causing issues like blank pages
-            cmd = [
-                str(gs_bin),
-                "-dBATCH",
-                "-dNOPAUSE",
-                "-dSAFER",
-                "-sDEVICE=pdfwrite",
-                "-dCompatibilityLevel=1.4",
-                "-dCompressFonts=true",
-                "-dCompressStreams=true",
-                "-dAutoRotatePages=/None",
-                f"-sOutputFile={output_pdf}",
-                str(input_pdf),
-            ]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode == 0:
-                print(f"[{profile.name}] Ghostscript safe compression (streams only) -> {output_pdf}")
-                return
-            # If GS fails, fall through to qpdf
-            print(f"[{profile.name}] Ghostscript failed, falling back to qpdf")
+    if profile.name == "Nettoyer":
+        # Just copy - no compression, preserve full quality
+        shutil.copy2(input_pdf, output_pdf)
+        print(f"[{profile.name}] copied (no compression) -> {output_pdf}")
+        return
     
-    # Fallback for all profiles: use qpdf (safest option)
+    if profile.name == "Très légers":
+        # Rasterize to images - maximum compression with sliders control
+        raster_compress_pdf(input_pdf, output_pdf, profile)
+        return
+    
+    # Fallback for any other profile: use qpdf
     qpdf_bin = find_qpdf()
     if not qpdf_bin:
         raise RuntimeError("qpdf is required. Install via: brew install qpdf")
@@ -310,7 +293,7 @@ def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
     
     result = subprocess.run(qpdf_cmd, capture_output=True, text=True)
     if result.returncode == 0:
-        print(f"[{profile.name}] qpdf safe compression -> {output_pdf}")
+        print(f"[{profile.name}] qpdf compression -> {output_pdf}")
         return
     
     error_msg = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"

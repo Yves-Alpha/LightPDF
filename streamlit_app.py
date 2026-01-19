@@ -285,81 +285,56 @@ def main() -> None:
             st.session_state["out_dir"] = str(default_out)
         if "profiles" not in st.session_state:
             st.session_state["profiles"] = {
-                "hq": {"enabled": False, "dpi": 300, "q": 92, "vector": False},
+                "clean": {"enabled": True, "dpi": 0, "q": 0, "vector": False},
                 "lite": {"enabled": True, "dpi": 96, "q": 80, "vector": False},
-                "vector_mix": {"enabled": False, "dpi": 150, "q": 75, "vector": True},
             }
         
         # Section de sélection du dossier de destination
         st.subheader("⚙️ Paramètres")
-        bleed_mm = st.number_input("🔲 Marge de sécurité à retirer (mm)", value=5.0, min_value=0.0, step=0.5, help="Espace blanc autour de votre document à supprimer (traits de coupe, etc.)")
         st.subheader("🎯 Choisissez votre profil")
         
         # Initialiser la sélection de profil s'il n'existe pas
         if "selected_profile" not in st.session_state:
-            st.session_state["selected_profile"] = "vector_mix"
+            st.session_state["selected_profile"] = "lite"
         
         # Radio button pour la sélection unique
         selected = st.radio(
-            "Sélectionnez un seul profil :",
-            options=["vector_mix", "lite", "hq"],
+            "Sélectionnez un profil :",
+            options=["clean", "lite"],
             format_func=lambda x: {
-                "vector_mix": "🪶 Vecteurs nets + images léger",
-                "lite": "💾 Très léger – Poids réduit au maximum",
-                "hq": "⚙️ Impression professionnelle – Meilleure qualité (lourd)"
+                "clean": "🧹 Nettoyer – Supprime les fonds perdus, qualité intacte",
+                "lite": "💾 Très légers – Maximum compression (pages en images)",
             }[x],
             key="selected_profile"
         )
         
         # Mettre à jour les profils : désactiver les autres, activer le sélectionné
-        st.session_state["profiles"]["vector_mix"]["enabled"] = (selected == "vector_mix")
+        st.session_state["profiles"]["clean"]["enabled"] = (selected == "clean")
         st.session_state["profiles"]["lite"]["enabled"] = (selected == "lite")
-        st.session_state["profiles"]["hq"]["enabled"] = (selected == "hq")
         
         # Afficher les options du profil sélectionné
-        if selected == "vector_mix":
-            col1, col2 = st.columns(2)
-            with col1:
-                st.session_state.profiles["vector_mix"]["dpi"] = st.slider(
-                    "Résolution des images (DPI)",
-                    min_value=72, max_value=300,
-                    value=st.session_state.profiles["vector_mix"]["dpi"],
-                    key="vector_mix_dpi",
-                    help="Agit uniquement sur les images raster (pas sur les vecteurs)."
-                )
-            with col2:
-                st.session_state.profiles["vector_mix"]["q"] = st.slider(
-                    "Compression",
-                    min_value=10, max_value=100,
-                    value=st.session_state.profiles["vector_mix"]["q"],
-                    key="vector_mix_q",
-                    help="Qualité JPEG des images raster uniquement."
-                )
-            st.info("✨ Vecteurs préservés intactes. Les images raster sont compressées selon DPI/Qualité.")
+        if selected == "clean":
+            st.info("🧹 Supprime uniquement les fonds perdus/bleeds. Aucune compression. Qualité PDF intacte.")
         
         elif selected == "lite":
-            lite_state = st.session_state["profiles"]["lite"]
             col1, col2 = st.columns(2)
             with col1:
                 st.session_state.profiles["lite"]["dpi"] = st.slider(
-                    "Résolution des images",
+                    "Résolution (DPI)",
                     min_value=72, max_value=300, 
                     value=st.session_state.profiles["lite"]["dpi"],
                     key="lite_dpi",
-                    help="72 DPI = très léger | 150 DPI = acceptable"
+                    help="Résolution des pages rasterisées en images"
                 )
             with col2:
                 st.session_state.profiles["lite"]["q"] = st.slider(
-                    "Compression",
+                    "Compression JPEG",
                     min_value=10, max_value=100, 
                     value=st.session_state.profiles["lite"]["q"],
                     key="lite_q",
                     help="10-40 = très compressé | 50-70 = équilibré"
                 )
-        
-        elif selected == "hq":
-            hq_state = st.session_state["profiles"]["hq"]
-            st.write("**Profil haute qualité**")
+            st.warning("⚠️ Les pages seront converties en images JPEG pour un gain de poids maximal.")
             st.session_state.profiles["hq"]["dpi"] = st.slider(
                 "Résolution des images",
                 min_value=72, max_value=300, 
@@ -392,36 +367,33 @@ def main() -> None:
     # Build selected profiles
     profiles = []
     prof_state = st.session_state.get("profiles", {})
-    if prof_state.get("hq", {}).get("enabled"):
+    if prof_state.get("clean", {}).get("enabled"):
         profiles.append(
-            CompressionProfile("HQ", dpi=int(prof_state["hq"]["dpi"]), quality=int(prof_state["hq"]["q"]), use_vector_compression=bool(prof_state["hq"].get("vector", False)))
+            CompressionProfile("Nettoyer", dpi=0, quality=0, use_vector_compression=False)
         )
     if prof_state.get("lite", {}).get("enabled"):
         profiles.append(
-            CompressionProfile("Très légers", dpi=int(prof_state["lite"]["dpi"]), quality=int(prof_state["lite"]["q"]), use_vector_compression=bool(prof_state["lite"].get("vector", False)))
-        )
-    if prof_state.get("vector_mix", {}).get("enabled"):
-        profiles.append(
-            CompressionProfile("Vector-IMG", dpi=int(prof_state["vector_mix"]["dpi"]), quality=int(prof_state["vector_mix"]["q"]), use_vector_compression=bool(prof_state["vector_mix"].get("vector", True)), image_only=True)
+            CompressionProfile("Très légers", dpi=int(prof_state["lite"]["dpi"]), quality=int(prof_state["lite"]["q"]), use_vector_compression=False)
         )
     
     # Debug: afficher les profils construits
     if profiles:
-        st.write("**Profils sélectionnés :**")
+        st.write("**Profil(s) sélectionné(s) :**")
         for p in profiles:
-            st.write(f"- {p.name}: DPI={p.dpi}, Quality={p.quality}, Vector={p.use_vector_compression}")
+            if p.name == "Nettoyer":
+                st.write(f"- {p.name}: Supprime fonds perdus, qualité intacte")
+            else:
+                st.write(f"- {p.name}: DPI={p.dpi}, Compression={p.quality}")
 
-    needs_poppler = any(not p.use_vector_compression for p in profiles)
+    needs_poppler = True  # Always need poppler for rasterization
     has_outputs = bool(profiles)
 
     if not poppler_ok and needs_poppler:
-        st.error("Poppler/pdftoppm n'est pas installé. Requis pour HQ/Light. Sur Streamlit Cloud, vérifie `packages.txt` (poppler-utils) puis redeploie.")
-    elif not poppler_ok and not needs_poppler:
-        st.info("Poppler/pdftoppm n'est pas installé. Active un profil HQ/Light après installation (brew install poppler ou `packages.txt` → poppler-utils).")
+        st.error("Poppler/pdftoppm n'est pas installé. Installez via : `brew install poppler`")
 
     start_disabled = (
         (not st.session_state.queue)
-        or (needs_poppler and not poppler_ok)
+        or (not poppler_ok)
         or (not has_outputs)
     )
 
@@ -444,7 +416,7 @@ def main() -> None:
                         base_name = key.replace("/", "_")
                         with tempfile.TemporaryDirectory() as tmpclean:
                             clean_path = Path(tmpclean) / f"{base_name}-clean.pdf"
-                            clean_pdf(merged, clean_path, bleed_mm=bleed_mm)
+                            clean_pdf(merged, clean_path, bleed_mm=5.0)
                             outputs = []
                             for profile in profiles:
                                 out_pdf = out_dir / f"{base_name}-{profile.name}.pdf"
@@ -454,7 +426,7 @@ def main() -> None:
                         tmpdir_merge.cleanup()
                     st.session_state.queue = []
                 else:
-                    results = process_queue(out_dir, bleed_mm=bleed_mm, profiles=profiles)
+                    results = process_queue(out_dir, bleed_mm=5.0, profiles=profiles)
             
             st.success("✅ Optimisation terminée !")
             
