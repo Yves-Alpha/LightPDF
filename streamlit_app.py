@@ -394,15 +394,15 @@ def main() -> None:
     prof_state = st.session_state.get("profiles", {})
     if prof_state.get("hq", {}).get("enabled"):
         profiles.append(
-            CompressionProfile("HQ", dpi=int(prof_state["hq"]["dpi"]), quality=int(prof_state["hq"]["q"]), use_vector_compression=True)
+            CompressionProfile("HQ", dpi=int(prof_state["hq"]["dpi"]), quality=int(prof_state["hq"]["q"]), use_vector_compression=bool(prof_state["hq"].get("vector", False)))
         )
     if prof_state.get("lite", {}).get("enabled"):
         profiles.append(
-            CompressionProfile("Light", dpi=int(prof_state["lite"]["dpi"]), quality=int(prof_state["lite"]["q"]), use_vector_compression=True)
+            CompressionProfile("Très légers", dpi=int(prof_state["lite"]["dpi"]), quality=int(prof_state["lite"]["q"]), use_vector_compression=bool(prof_state["lite"].get("vector", False)))
         )
     if prof_state.get("vector_mix", {}).get("enabled"):
         profiles.append(
-            CompressionProfile("Vector-IMG", dpi=int(prof_state["vector_mix"]["dpi"]), quality=int(prof_state["vector_mix"]["q"]), use_vector_compression=True, image_only=True)
+            CompressionProfile("Vector-IMG", dpi=int(prof_state["vector_mix"]["dpi"]), quality=int(prof_state["vector_mix"]["q"]), use_vector_compression=bool(prof_state["vector_mix"].get("vector", True)), image_only=True)
         )
     
     # Debug: afficher les profils construits
