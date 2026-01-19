@@ -261,57 +261,35 @@ def flatten_transparency_pdf(input_pdf: Path, output_pdf: Path, allow_fallback_1
 
 def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionProfile) -> None:
     """
-    Compress PDF safely using qpdf or minimal Ghostscript.
-    For Vector profiles: use qpdf to preserve vectors without rasterization.
-    For other profiles: use simple GS command without complex device properties.
+    Compress PDF safely using ONLY qpdf - no Ghostscript tricks.
+    qpdf never causes aberrations, just recompresses streams.
+    For aggressive compression (Light profile), still use qpdf only.
     """
     output_pdf.parent.mkdir(parents=True, exist_ok=True)
     
-    # STRATEGY: Use qpdf for maximum safety (no rasterization, no distortion)
-    # qpdf is safe, fast, and doesn't cause aberrations
     qpdf_bin = find_qpdf()
-    if qpdf_bin:
-        qpdf_cmd = [
-            str(qpdf_bin),
-            "--stream-data=compress",
-            "--recompress-streams=y",
-            "--compression-level=9",
-            "--",
-            str(input_pdf),
-            str(output_pdf),
-        ]
-        result = subprocess.run(qpdf_cmd, capture_output=True, text=True)
-        if result.returncode == 0:
-            print(f"[{profile.name}] qpdf recompress -> {output_pdf}")
-            return
-        # If qpdf fails, fall through to Ghostscript
-        print(f"[{profile.name}] qpdf failed, using Ghostscript")
+    if not qpdf_bin:
+        raise RuntimeError("qpdf is required. Install via: brew install qpdf")
     
-    # FALLBACK: Minimal Ghostscript with safe parameters
-    # This is intentionally simple - no color conversion, no advanced options
-    gs_bin = find_ghostscript()
-    if not gs_bin:
-        raise RuntimeError("qpdf or Ghostscript is required for compression.")
-    
-    cmd = [
-        str(gs_bin),
-        "-dBATCH",
-        "-dNOPAUSE",
-        "-dSAFER",
-        "-sDEVICE=pdfwrite",
-        "-dCompatibilityLevel=1.4",
-        "-dAutoRotatePages=/None",
-        f"-sOutputFile={output_pdf}",
+    # Single, stable, safe command
+    # Stream compression is all we need - no rasterization, no distortion
+    qpdf_cmd = [
+        str(qpdf_bin),
+        "--stream-data=compress",
+        "--recompress-streams=y",
+        "--compression-level=9",
+        "--",
         str(input_pdf),
+        str(output_pdf),
     ]
     
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(qpdf_cmd, capture_output=True, text=True)
     if result.returncode == 0:
-        print(f"[{profile.name}] Ghostscript basic compression -> {output_pdf}")
+        print(f"[{profile.name}] qpdf safe compression -> {output_pdf}")
         return
     
     error_msg = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
-    raise RuntimeError(f"Compression failed for {input_pdf}: {error_msg}")
+    raise RuntimeError(f"qpdf compression failed: {error_msg}")
 
 
 def compress_images_only_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionProfile) -> None:
@@ -449,7 +427,4 @@ def process_one(input_pdf: Path, out_dir: Path, bleed_mm: float, profiles: Itera
 
     for profile in profiles:
         output_pdf = out_dir / f"{base_name}-net-{profile.name}.pdf"
-        if profile.use_vector_compression:
-            vector_compress_pdf(clean_path, output_pdf, profile)
-        else:
-            raster_compress_pdf(clean_path, output_pdf, profile)
+        vector_compress_pdf(clean_path, output_pdf, profile)

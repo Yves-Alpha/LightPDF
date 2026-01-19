@@ -427,11 +427,11 @@ def main() -> None:
     prof_state = st.session_state.get("profiles", {})
     if prof_state.get("hq", {}).get("enabled"):
         profiles.append(
-            CompressionProfile("HQ", dpi=int(prof_state["hq"]["dpi"]), quality=int(prof_state["hq"]["q"]), use_vector_compression=False)
+            CompressionProfile("HQ", dpi=int(prof_state["hq"]["dpi"]), quality=int(prof_state["hq"]["q"]), use_vector_compression=True)
         )
     if prof_state.get("lite", {}).get("enabled"):
         profiles.append(
-            CompressionProfile("Light", dpi=int(prof_state["lite"]["dpi"]), quality=int(prof_state["lite"]["q"]), use_vector_compression=False)
+            CompressionProfile("Light", dpi=int(prof_state["lite"]["dpi"]), quality=int(prof_state["lite"]["q"]), use_vector_compression=True)
         )
     if prof_state.get("vector_mix", {}).get("enabled"):
         profiles.append(
