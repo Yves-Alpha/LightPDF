@@ -374,13 +374,6 @@ def main() -> None:
             )
         
         st.markdown("---")
-        
-        # Options avancées (cachées)
-        with st.expander("⚙️ Options spéciales"):
-            
-            st.markdown("---")
-            st.write("**Options spéciales**")
-            # Flatten transparency option removed - using simple qpdf compression instead
 
     uploader_key = st.session_state["uploader_key"]
     st.markdown("---")
