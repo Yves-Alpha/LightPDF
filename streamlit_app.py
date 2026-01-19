@@ -128,8 +128,7 @@ def process_queue(
             outputs = []
             for profile in profiles:
                 out_pdf = output_dir / f"{base}-{profile.name}.pdf"
-                image_format = "webp" if profile.name == "Moyen" else "jpeg"
-                vector_compress_pdf(clean_path, out_pdf, profile, image_format=image_format)
+                vector_compress_pdf(clean_path, out_pdf, profile)
                 outputs.append(str(out_pdf))
             results.append({"name": base, "outputs": outputs})
         progress.progress(idx / total, text=f"{name} : terminé ({idx}/{total})")
@@ -305,7 +304,7 @@ def main() -> None:
             options=["clean", "medium", "lite"],
             format_func=lambda x: {
                 "clean": "🧹 Nettoyer – Supprime fonds perdus, qualité intacte",
-                "medium": "⚖️ Moyen – WebP 72 DPI, bon compromis poids/qualité",
+                "medium": "⚖️ Moyen – qpdf safe, bon compromis poids/qualité",
                 "lite": "💾 Très légers – JPEG maximum compression (ajustable)",
             }[x],
             key="selected_profile"
@@ -321,14 +320,7 @@ def main() -> None:
             st.info("🧹 Supprime uniquement les fonds perdus/bleeds. Aucune compression. Qualité PDF intacte.")
         
         elif selected == "medium":
-            st.session_state.profiles["medium"]["q"] = st.slider(
-                "Compression WebP",
-                min_value=10, max_value=100, 
-                value=st.session_state.profiles["medium"]["q"],
-                key="medium_q",
-                help="10-40 = très compressé | 60-80 = très bon | 90+ = quasi lossless"
-            )
-            st.info("⚖️ WebP 72 DPI : meilleur compromis poids vs qualité (fichiers 30% plus petits qu'JPEG)")
+            st.info("⚖️ qpdf safe compression : bon compromis poids/qualité, **zéro aberrations**.")
         
         elif selected == "lite":
             col1, col2 = st.columns(2)
@@ -389,7 +381,7 @@ def main() -> None:
             if p.name == "Nettoyer":
                 st.write(f"- {p.name}: Supprime fonds perdus, qualité intacte")
             elif p.name == "Moyen":
-                st.write(f"- {p.name}: WebP 72 DPI, compression={p.quality}")
+                st.write(f"- {p.name}: qpdf safe compression")
             else:
                 st.write(f"- {p.name}: JPEG DPI={p.dpi}, compression={p.quality}")
 
@@ -428,8 +420,7 @@ def main() -> None:
                             outputs = []
                             for profile in profiles:
                                 out_pdf = out_dir / f"{base_name}-{profile.name}.pdf"
-                                image_format = "webp" if profile.name == "Moyen" else "jpeg"
-                                vector_compress_pdf(clean_path, out_pdf, profile, image_format=image_format)
+                                vector_compress_pdf(clean_path, out_pdf, profile)
                                 outputs.append(str(out_pdf))
                             results.append({"name": base_name, "outputs": outputs})
                         tmpdir_merge.cleanup()

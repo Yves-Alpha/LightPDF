@@ -263,7 +263,7 @@ def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
     """
     Handle profiles:
     - "Nettoyer": just copy the cleaned PDF (no compression at all)
-    - "Moyen": rasterize to WebP images (fixed 72 DPI)
+    - "Moyen": use qpdf for safe compression (no rasterization, no aberrations)
     - "Très légers": rasterize to JPEG images (variable DPI)
     """
     output_pdf.parent.mkdir(parents=True, exist_ok=True)
@@ -274,9 +274,35 @@ def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
         print(f"[{profile.name}] copied (no compression) -> {output_pdf}")
         return
     
-    # Rasterize to images for "Moyen" and "Très légers"
-    raster_compress_pdf(input_pdf, output_pdf, profile, image_format=image_format)
-    return
+    if profile.name == "Moyen":
+        # Use qpdf for safe compression (no rasterization, no aberrations)
+        qpdf_bin = find_qpdf()
+        if not qpdf_bin:
+            raise RuntimeError("qpdf is required. Install via: brew install qpdf")
+        
+        qpdf_cmd = [
+            str(qpdf_bin),
+            "--stream-data=compress",
+            "--",
+            str(input_pdf),
+            str(output_pdf),
+        ]
+        
+        result = subprocess.run(qpdf_cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            print(f"[{profile.name}] qpdf safe compression -> {output_pdf}")
+            return
+        
+        error_msg = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
+        raise RuntimeError(f"qpdf compression failed: {error_msg}")
+    
+    if profile.name == "Très légers":
+        # Rasterize to JPEG images for maximum compression
+        raster_compress_pdf(input_pdf, output_pdf, profile, image_format="jpeg")
+        return
+    
+    # Fallback: should not reach here
+    raise RuntimeError(f"Unknown profile: {profile.name}")
 
 
 def compress_images_only_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionProfile) -> None:
