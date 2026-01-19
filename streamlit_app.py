@@ -335,18 +335,6 @@ def main() -> None:
                     help="10-40 = très compressé | 50-70 = équilibré"
                 )
             st.warning("⚠️ Les pages seront converties en images JPEG pour un gain de poids maximal.")
-            st.session_state.profiles["hq"]["dpi"] = st.slider(
-                "Résolution des images",
-                min_value=72, max_value=300, 
-                value=st.session_state.profiles["hq"]["dpi"],
-                key="hq_dpi"
-            )
-            st.session_state.profiles["hq"]["q"] = st.slider(
-                "Compression",
-                min_value=10, max_value=100, 
-                value=st.session_state.profiles["hq"]["q"],
-                key="hq_q"
-            )
         
         st.markdown("---")
 
