@@ -261,17 +261,64 @@ def flatten_transparency_pdf(input_pdf: Path, output_pdf: Path, allow_fallback_1
 
 def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionProfile) -> None:
     """
-    Compress PDF safely using ONLY qpdf - no Ghostscript tricks.
-    qpdf never causes aberrations, just recompresses streams.
-    For aggressive compression (Light profile), still use qpdf only.
+    Compress PDF safely.
+    - For "Très légers": Use Ghostscript with aggressive downsampling but NO color conversion tricks
+    - For others: Use qpdf only
+    
+    NO rasterization, NO aberrations. Just smart stream + image compression.
     """
     output_pdf.parent.mkdir(parents=True, exist_ok=True)
     
+    # For "Très légers" profile: use Ghostscript for image downsampling
+    if profile.name == "Très légers":
+        gs_bin = find_ghostscript()
+        if gs_bin:
+            # Aggressive but SAFE compression for Très légers
+            # - Downsample images to 96 DPI
+            # - Low JPEG quality (60) for small file size
+            # - NO color conversion tricks
+            # - NO blend color space tricks
+            # - Just pure stream compression
+            cmd = [
+                str(gs_bin),
+                "-dBATCH",
+                "-dNOPAUSE",
+                "-dSAFER",
+                "-sDEVICE=pdfwrite",
+                "-dCompatibilityLevel=1.4",
+                "-dDetectDuplicateImages=true",
+                "-dCompressFonts=true",
+                "-dSubsetFonts=true",
+                # Image downsampling - aggressive for small file size
+                "-dColorImageDownsampleType=/Bicubic",
+                "-dGrayImageDownsampleType=/Bicubic",
+                "-dMonoImageDownsampleType=/Bicubic",
+                "-dColorImageResolution=96",
+                "-dGrayImageResolution=96",
+                "-dMonoImageResolution=96",
+                "-dDownsampleColorImages=true",
+                "-dDownsampleGrayImages=true",
+                "-dDownsampleMonoImages=false",
+                # JPEG compression - aggressive quality for small file
+                "-dJPEGQ=60",
+                # Stream compression
+                "-dCompressStreams=true",
+                "-dAutoRotatePages=/None",
+                f"-sOutputFile={output_pdf}",
+                str(input_pdf),
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                print(f"[{profile.name}] Ghostscript aggressive compression (96 DPI, quality 60) -> {output_pdf}")
+                return
+            # If GS fails, fall through to qpdf
+            print(f"[{profile.name}] Ghostscript failed, falling back to qpdf")
+    
+    # Fallback for all profiles: use qpdf (safest option)
     qpdf_bin = find_qpdf()
     if not qpdf_bin:
         raise RuntimeError("qpdf is required. Install via: brew install qpdf")
     
-    # Single, stable, safe command - compatible with more qpdf versions
     qpdf_cmd = [
         str(qpdf_bin),
         "--stream-data=compress",
