@@ -262,23 +262,19 @@ def flatten_transparency_pdf(input_pdf: Path, output_pdf: Path, allow_fallback_1
 def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionProfile) -> None:
     """
     Compress PDF safely.
-    - For "Très légers": Use Ghostscript with aggressive downsampling but NO color conversion tricks
+    - For "Très légers": Use Ghostscript with MINIMAL parameters (just stream compression)
     - For others: Use qpdf only
     
-    NO rasterization, NO aberrations. Just smart stream + image compression.
+    NO rasterization, NO aberrations. Just safe stream compression.
     """
     output_pdf.parent.mkdir(parents=True, exist_ok=True)
     
-    # For "Très légers" profile: use Ghostscript for image downsampling
+    # For "Très légers" profile: use Ghostscript with MINIMAL safe parameters only
     if profile.name == "Très légers":
         gs_bin = find_ghostscript()
         if gs_bin:
-            # Aggressive but SAFE compression for Très légers
-            # - Downsample images to 96 DPI
-            # - Low JPEG quality (60) for small file size
-            # - NO color conversion tricks
-            # - NO blend color space tricks
-            # - Just pure stream compression
+            # MINIMAL Ghostscript - just compress streams, nothing fancy
+            # This reduces file size without causing issues like blank pages
             cmd = [
                 str(gs_bin),
                 "-dBATCH",
@@ -286,22 +282,7 @@ def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
                 "-dSAFER",
                 "-sDEVICE=pdfwrite",
                 "-dCompatibilityLevel=1.4",
-                "-dDetectDuplicateImages=true",
                 "-dCompressFonts=true",
-                "-dSubsetFonts=true",
-                # Image downsampling - aggressive for small file size
-                "-dColorImageDownsampleType=/Bicubic",
-                "-dGrayImageDownsampleType=/Bicubic",
-                "-dMonoImageDownsampleType=/Bicubic",
-                "-dColorImageResolution=96",
-                "-dGrayImageResolution=96",
-                "-dMonoImageResolution=96",
-                "-dDownsampleColorImages=true",
-                "-dDownsampleGrayImages=true",
-                "-dDownsampleMonoImages=false",
-                # JPEG compression - aggressive quality for small file
-                "-dJPEGQ=60",
-                # Stream compression
                 "-dCompressStreams=true",
                 "-dAutoRotatePages=/None",
                 f"-sOutputFile={output_pdf}",
@@ -309,7 +290,7 @@ def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
             ]
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode == 0:
-                print(f"[{profile.name}] Ghostscript aggressive compression (96 DPI, quality 60) -> {output_pdf}")
+                print(f"[{profile.name}] Ghostscript safe compression (streams only) -> {output_pdf}")
                 return
             # If GS fails, fall through to qpdf
             print(f"[{profile.name}] Ghostscript failed, falling back to qpdf")
