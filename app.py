@@ -259,11 +259,12 @@ def flatten_transparency_pdf(input_pdf: Path, output_pdf: Path, allow_fallback_1
 
 
 
-def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionProfile) -> None:
+def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionProfile, image_format: str = "jpeg") -> None:
     """
-    Handle two profiles:
+    Handle profiles:
     - "Nettoyer": just copy the cleaned PDF (no compression at all)
-    - "Très légers": rasterize to images for maximum compression
+    - "Moyen": rasterize to WebP images (fixed 72 DPI)
+    - "Très légers": rasterize to JPEG images (variable DPI)
     """
     output_pdf.parent.mkdir(parents=True, exist_ok=True)
     
@@ -273,31 +274,9 @@ def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
         print(f"[{profile.name}] copied (no compression) -> {output_pdf}")
         return
     
-    if profile.name == "Très légers":
-        # Rasterize to images - maximum compression with sliders control
-        raster_compress_pdf(input_pdf, output_pdf, profile)
-        return
-    
-    # Fallback for any other profile: use qpdf
-    qpdf_bin = find_qpdf()
-    if not qpdf_bin:
-        raise RuntimeError("qpdf is required. Install via: brew install qpdf")
-    
-    qpdf_cmd = [
-        str(qpdf_bin),
-        "--stream-data=compress",
-        "--",
-        str(input_pdf),
-        str(output_pdf),
-    ]
-    
-    result = subprocess.run(qpdf_cmd, capture_output=True, text=True)
-    if result.returncode == 0:
-        print(f"[{profile.name}] qpdf compression -> {output_pdf}")
-        return
-    
-    error_msg = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
-    raise RuntimeError(f"qpdf compression failed: {error_msg}")
+    # Rasterize to images for "Moyen" and "Très légers"
+    raster_compress_pdf(input_pdf, output_pdf, profile, image_format=image_format)
+    return
 
 
 def compress_images_only_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionProfile) -> None:
@@ -331,11 +310,13 @@ def compress_images_only_pdf(input_pdf: Path, output_pdf: Path, profile: Compres
 
 
 
-def raster_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionProfile) -> None:
+def raster_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionProfile, image_format: str = "jpeg") -> None:
     """
-    Rasterize each page then rebuild a PDF with JPEG-compressed pages.
+    Rasterize each page then rebuild a PDF with image-compressed pages.
     Keeps page sizes intact so any format is supported.
-    ⚠️ This causes pixellation - use vector_compress_pdf for text/vectors.
+    ⚠️ This converts pages to images - use when you accept rasterization for compression.
+    
+    image_format: "jpeg" or "webp"
     """
     if PdfReader is None:
         raise RuntimeError("PdfReader is not available. Check PyPDF2 import.")
@@ -349,8 +330,8 @@ def raster_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
     reader = PdfReader(str(input_pdf))
     page_count = len(reader.pages)
     
-    # sRGB conversion for file size reduction (except for HQ profile)
-    use_srgb = profile.name != "HQ"
+    # sRGB conversion for file size reduction
+    use_srgb = True
     
     # If sRGB conversion needed for rasterized PDF, pre-process with Ghostscript first
     temp_pdf_path = input_pdf
@@ -401,11 +382,14 @@ def raster_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
         can.setPageSize((width_pt, height_pt))
 
         buff = BytesIO()
-        img.save(buff, format="JPEG", quality=profile.quality, optimize=True)
+        if image_format.lower() == "webp":
+            img.save(buff, format="WEBP", quality=profile.quality, method=6)
+        else:
+            img.save(buff, format="JPEG", quality=profile.quality, optimize=True)
         buff.seek(0)
         can.drawImage(ImageReader(buff), 0, 0, width=width_pt, height=height_pt)
         can.showPage()
-        print(f"[{profile.name}] {input_pdf.name} page {idx + 1}/{page_count} at {profile.dpi} dpi, q={profile.quality}")
+        print(f"[{profile.name}] {input_pdf.name} page {idx + 1}/{page_count} at {profile.dpi} dpi, {image_format.upper()}, q={profile.quality}")
     
     can.save()
     print(f"[{profile.name}] written {output_pdf}")

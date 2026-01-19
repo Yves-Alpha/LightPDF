@@ -128,7 +128,8 @@ def process_queue(
             outputs = []
             for profile in profiles:
                 out_pdf = output_dir / f"{base}-{profile.name}.pdf"
-                vector_compress_pdf(clean_path, out_pdf, profile)
+                image_format = "webp" if profile.name == "Moyen" else "jpeg"
+                vector_compress_pdf(clean_path, out_pdf, profile, image_format=image_format)
                 outputs.append(str(out_pdf))
             results.append({"name": base, "outputs": outputs})
         progress.progress(idx / total, text=f"{name} : terminé ({idx}/{total})")
@@ -285,8 +286,9 @@ def main() -> None:
             st.session_state["out_dir"] = str(default_out)
         if "profiles" not in st.session_state:
             st.session_state["profiles"] = {
-                "clean": {"enabled": True, "dpi": 0, "q": 0, "vector": False},
-                "lite": {"enabled": True, "dpi": 96, "q": 80, "vector": False},
+                "clean": {"enabled": False, "dpi": 0, "q": 0, "vector": False},
+                "medium": {"enabled": True, "dpi": 72, "q": 75, "vector": False, "format": "webp"},
+                "lite": {"enabled": False, "dpi": 96, "q": 60, "vector": False, "format": "jpeg"},
             }
         
         # Section de sélection du dossier de destination
@@ -295,26 +297,38 @@ def main() -> None:
         
         # Initialiser la sélection de profil s'il n'existe pas
         if "selected_profile" not in st.session_state:
-            st.session_state["selected_profile"] = "lite"
+            st.session_state["selected_profile"] = "medium"
         
         # Radio button pour la sélection unique
         selected = st.radio(
             "Sélectionnez un profil :",
-            options=["clean", "lite"],
+            options=["clean", "medium", "lite"],
             format_func=lambda x: {
-                "clean": "🧹 Nettoyer – Supprime les fonds perdus, qualité intacte",
-                "lite": "💾 Très légers – Maximum compression (pages en images)",
+                "clean": "🧹 Nettoyer – Supprime fonds perdus, qualité intacte",
+                "medium": "⚖️ Moyen – WebP 72 DPI, bon compromis poids/qualité",
+                "lite": "💾 Très légers – JPEG maximum compression (ajustable)",
             }[x],
             key="selected_profile"
         )
         
         # Mettre à jour les profils : désactiver les autres, activer le sélectionné
         st.session_state["profiles"]["clean"]["enabled"] = (selected == "clean")
+        st.session_state["profiles"]["medium"]["enabled"] = (selected == "medium")
         st.session_state["profiles"]["lite"]["enabled"] = (selected == "lite")
         
         # Afficher les options du profil sélectionné
         if selected == "clean":
             st.info("🧹 Supprime uniquement les fonds perdus/bleeds. Aucune compression. Qualité PDF intacte.")
+        
+        elif selected == "medium":
+            st.session_state.profiles["medium"]["q"] = st.slider(
+                "Compression WebP",
+                min_value=10, max_value=100, 
+                value=st.session_state.profiles["medium"]["q"],
+                key="medium_q",
+                help="10-40 = très compressé | 60-80 = très bon | 90+ = quasi lossless"
+            )
+            st.info("⚖️ WebP 72 DPI : meilleur compromis poids vs qualité (fichiers 30% plus petits qu'JPEG)")
         
         elif selected == "lite":
             col1, col2 = st.columns(2)
@@ -334,7 +348,7 @@ def main() -> None:
                     key="lite_q",
                     help="10-40 = très compressé | 50-70 = équilibré"
                 )
-            st.warning("⚠️ Les pages seront converties en images JPEG pour un gain de poids maximal.")
+            st.warning("⚠️ JPEG maximum compression : pages converties en images, DPI/qualité ajustables.")
         
         st.markdown("---")
 
@@ -359,6 +373,10 @@ def main() -> None:
         profiles.append(
             CompressionProfile("Nettoyer", dpi=0, quality=0, use_vector_compression=False)
         )
+    if prof_state.get("medium", {}).get("enabled"):
+        profiles.append(
+            CompressionProfile("Moyen", dpi=72, quality=int(prof_state["medium"]["q"]), use_vector_compression=False)
+        )
     if prof_state.get("lite", {}).get("enabled"):
         profiles.append(
             CompressionProfile("Très légers", dpi=int(prof_state["lite"]["dpi"]), quality=int(prof_state["lite"]["q"]), use_vector_compression=False)
@@ -370,8 +388,10 @@ def main() -> None:
         for p in profiles:
             if p.name == "Nettoyer":
                 st.write(f"- {p.name}: Supprime fonds perdus, qualité intacte")
+            elif p.name == "Moyen":
+                st.write(f"- {p.name}: WebP 72 DPI, compression={p.quality}")
             else:
-                st.write(f"- {p.name}: DPI={p.dpi}, Compression={p.quality}")
+                st.write(f"- {p.name}: JPEG DPI={p.dpi}, compression={p.quality}")
 
     needs_poppler = True  # Always need poppler for rasterization
     has_outputs = bool(profiles)
@@ -408,7 +428,8 @@ def main() -> None:
                             outputs = []
                             for profile in profiles:
                                 out_pdf = out_dir / f"{base_name}-{profile.name}.pdf"
-                                vector_compress_pdf(clean_path, out_pdf, profile)
+                                image_format = "webp" if profile.name == "Moyen" else "jpeg"
+                                vector_compress_pdf(clean_path, out_pdf, profile, image_format=image_format)
                                 outputs.append(str(out_pdf))
                             results.append({"name": base_name, "outputs": outputs})
                         tmpdir_merge.cleanup()
