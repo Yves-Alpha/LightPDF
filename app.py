@@ -271,13 +271,10 @@ def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
     if not qpdf_bin:
         raise RuntimeError("qpdf is required. Install via: brew install qpdf")
     
-    # Single, stable, safe command
-    # Stream compression is all we need - no rasterization, no distortion
+    # Single, stable, safe command - compatible with more qpdf versions
     qpdf_cmd = [
         str(qpdf_bin),
         "--stream-data=compress",
-        "--recompress-streams=y",
-        "--compression-level=9",
         "--",
         str(input_pdf),
         str(output_pdf),
