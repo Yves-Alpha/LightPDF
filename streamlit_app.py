@@ -303,9 +303,9 @@ def main() -> None:
             "Sélectionnez un profil :",
             options=["clean", "medium", "lite"],
             format_func=lambda x: {
-                "clean": "🧹 Nettoyer – Supprime fonds perdus, qualité intacte",
-                "medium": "⚖️ Moyen – qpdf safe, bon compromis poids/qualité",
-                "lite": "💾 Très légers – JPEG maximum compression (ajustable)",
+                "clean": "🧹 Au format – Supprime fonds perdus, qualité intacte",
+                "medium": "⚖️ Moyen – Bon compromis poids/qualité",
+                "lite": "💾 Très légers – Maximum compression",
             }[x],
             key="selected_profile"
         )
@@ -317,13 +317,13 @@ def main() -> None:
         
         # Afficher les options du profil sélectionné
         if selected == "clean":
-            st.info("🧹 Supprime uniquement les fonds perdus/bleeds. Aucune compression. Qualité PDF intacte.")
+            st.info("Supprime les fonds perdus, qualité intacte.")
         
         elif selected == "medium":
-            st.info("⚖️ qpdf safe compression : bon compromis poids/qualité, **zéro aberrations**.")
+            st.info("Bon compromis : fichier plus léger, sans défauts.")
         
         elif selected == "lite":
-            st.info("💾 Ghostscript aggressive compression : 96 DPI downsampling, JPEG quality 60. Très léger, zéro aberrations, pixellation acceptée.")
+            st.info("Très léger, mais avec pixellation visuelle.")
         
         st.markdown("---")
 
