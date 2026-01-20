@@ -133,7 +133,7 @@ def find_qpdf() -> Path | None:
     return None
 
 
-ensure_deps()
+ensure_deps()  # Installe les dépendances manquantes
 warn_pdftoppm()
 
 try:
@@ -297,9 +297,65 @@ def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
         raise RuntimeError(f"qpdf compression failed: {error_msg}")
     
     if profile.name == "Très légers":
-        # Rasterize to JPEG images for maximum compression
-        raster_compress_pdf(input_pdf, output_pdf, profile, image_format="jpeg")
-        return
+        # Use Ghostscript for aggressive image downsampling (NOT rasterization)
+        # This compresses embedded images in the PDF without converting to raster
+        # Result: very light file size, acceptable pixellation, ZERO aberrations
+        gs_bin = find_ghostscript()
+        if gs_bin:
+            cmd = [
+                str(gs_bin),
+                "-dBATCH",
+                "-dNOPAUSE",
+                "-dSAFER",
+                "-sDEVICE=pdfwrite",
+                "-dCompatibilityLevel=1.4",
+                "-dDetectDuplicateImages=true",
+                "-dCompressFonts=true",
+                "-dSubsetFonts=true",
+                # Image downsampling - aggressive for small file size
+                "-dColorImageDownsampleType=/Bicubic",
+                "-dGrayImageDownsampleType=/Bicubic",
+                "-dMonoImageDownsampleType=/Bicubic",
+                "-dColorImageResolution=96",
+                "-dGrayImageResolution=96",
+                "-dMonoImageResolution=96",
+                "-dDownsampleColorImages=true",
+                "-dDownsampleGrayImages=true",
+                "-dDownsampleMonoImages=false",
+                # JPEG compression - aggressive quality for small file
+                "-dJPEGQ=60",
+                # Stream compression
+                "-dCompressStreams=true",
+                "-dAutoRotatePages=/None",
+                f"-sOutputFile={output_pdf}",
+                str(input_pdf),
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                print(f"[{profile.name}] Ghostscript aggressive compression (96 DPI, quality 60) -> {output_pdf}")
+                return
+            print(f"[{profile.name}] Ghostscript failed, falling back to qpdf")
+        
+        # Fallback if Ghostscript unavailable or fails: use qpdf
+        qpdf_bin = find_qpdf()
+        if not qpdf_bin:
+            raise RuntimeError("qpdf is required. Install via: brew install qpdf")
+        
+        qpdf_cmd = [
+            str(qpdf_bin),
+            "--stream-data=compress",
+            "--",
+            str(input_pdf),
+            str(output_pdf),
+        ]
+        
+        result = subprocess.run(qpdf_cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            print(f"[{profile.name}] qpdf fallback compression -> {output_pdf}")
+            return
+        
+        error_msg = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
+        raise RuntimeError(f"Compression failed for Très légers: {error_msg}")
     
     # Fallback: should not reach here
     raise RuntimeError(f"Unknown profile: {profile.name}")

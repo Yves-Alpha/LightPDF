@@ -285,9 +285,9 @@ def main() -> None:
             st.session_state["out_dir"] = str(default_out)
         if "profiles" not in st.session_state:
             st.session_state["profiles"] = {
-                "clean": {"enabled": False, "dpi": 0, "q": 0, "vector": False},
-                "medium": {"enabled": True, "dpi": 72, "q": 75, "vector": False, "format": "webp"},
-                "lite": {"enabled": False, "dpi": 96, "q": 60, "vector": False, "format": "jpeg"},
+                "clean": {"enabled": False},
+                "medium": {"enabled": True},
+                "lite": {"enabled": False},
             }
         
         # Section de sélection du dossier de destination
@@ -323,24 +323,7 @@ def main() -> None:
             st.info("⚖️ qpdf safe compression : bon compromis poids/qualité, **zéro aberrations**.")
         
         elif selected == "lite":
-            col1, col2 = st.columns(2)
-            with col1:
-                st.session_state.profiles["lite"]["dpi"] = st.slider(
-                    "Résolution (DPI)",
-                    min_value=72, max_value=300, 
-                    value=st.session_state.profiles["lite"]["dpi"],
-                    key="lite_dpi",
-                    help="Résolution des pages rasterisées en images"
-                )
-            with col2:
-                st.session_state.profiles["lite"]["q"] = st.slider(
-                    "Compression JPEG",
-                    min_value=10, max_value=100, 
-                    value=st.session_state.profiles["lite"]["q"],
-                    key="lite_q",
-                    help="10-40 = très compressé | 50-70 = équilibré"
-                )
-            st.warning("⚠️ JPEG maximum compression : pages converties en images, DPI/qualité ajustables.")
+            st.info("💾 Ghostscript aggressive compression : 96 DPI downsampling, JPEG quality 60. Très léger, zéro aberrations, pixellation acceptée.")
         
         st.markdown("---")
 
@@ -363,15 +346,16 @@ def main() -> None:
     prof_state = st.session_state.get("profiles", {})
     if prof_state.get("clean", {}).get("enabled"):
         profiles.append(
-            CompressionProfile("Nettoyer", dpi=0, quality=0, use_vector_compression=False)
+            CompressionProfile("Nettoyer", dpi=0, quality=0)
         )
     if prof_state.get("medium", {}).get("enabled"):
         profiles.append(
-            CompressionProfile("Moyen", dpi=72, quality=int(prof_state["medium"]["q"]), use_vector_compression=False)
+            CompressionProfile("Moyen", dpi=0, quality=0)
         )
     if prof_state.get("lite", {}).get("enabled"):
+        # Très légers uses fixed Ghostscript params: 96 DPI, JPEG quality 60
         profiles.append(
-            CompressionProfile("Très légers", dpi=int(prof_state["lite"]["dpi"]), quality=int(prof_state["lite"]["q"]), use_vector_compression=False)
+            CompressionProfile("Très légers", dpi=96, quality=60)
         )
     
     # Debug: afficher les profils construits
