@@ -20,7 +20,7 @@ from typing import List
 from io import BytesIO
 
 import streamlit as st  # pyright: ignore[reportMissingImports]
-from PyPDF2 import PdfReader, PdfWriter  # pyright: ignore[reportMissingImports]
+import pikepdf  # pyright: ignore[reportMissingImports]
 
 # Ensure Application Support path uses the Light-PDF app name
 os.environ.setdefault("ROTO_APP_NAME", "Light-PDF")
@@ -32,11 +32,8 @@ sys.path.insert(0, str(ROOT_DIR))
 from app import (  # noqa: E402
     CompressionProfile,
     clean_pdf,
-    compress_images_only_pdf,
     find_qpdf,
-    has_ghostscript,
     vector_compress_pdf,
-    warn_pdftoppm,
 )
 
 
@@ -154,7 +151,7 @@ def process_queue(
 def merge_queue_into_pdf(queue, label: str | None = None) -> tuple[Path, tempfile.TemporaryDirectory]:
     tmpdir = tempfile.TemporaryDirectory()
     merged_path = Path(tmpdir.name) / (f"{label}.pdf" if label else "merged.pdf")
-    writer = PdfWriter()
+    merged_pdf = pikepdf.Pdf.new()
     for item in sorted(
         queue,
         key=lambda x: (
@@ -163,11 +160,10 @@ def merge_queue_into_pdf(queue, label: str | None = None) -> tuple[Path, tempfil
             x["name"],
         ),
     ):
-        reader = PdfReader(BytesIO(item["data"]))
-        for page in reader.pages:
-            writer.add_page(page)
-    with open(merged_path, "wb") as f:
-        writer.write(f)
+        src = pikepdf.Pdf.open(BytesIO(item["data"]))
+        merged_pdf.pages.extend(src.pages)
+    merged_pdf.save(merged_path)
+    merged_pdf.close()
     return merged_path, tmpdir
 
 
@@ -267,24 +263,8 @@ def main() -> None:
     st.title("🪶 Light-PDF")
     st.markdown("Optimisez vos PDFs : **sans pixellisation du texte et des images**, traits de coupe et fonds perdus supprimés.")
     
-    # Détection des dépendances (résultats cachés)
-    try:
-        ghostscript_ok = has_ghostscript()
-    except Exception as e:
-        print(f"[ERROR] has_ghostscript() failed: {e}", flush=True)
-        ghostscript_ok = False
-    
-    try:
-        poppler_ok = has_pdftoppm()
-    except Exception as e:
-        print(f"[ERROR] has_pdftoppm() failed: {e}", flush=True)
-        poppler_ok = False
-
-    try:
-        qpdf_ok = find_qpdf() is not None
-    except Exception as e:
-        print(f"[ERROR] find_qpdf() failed: {e}", flush=True)
-        qpdf_ok = False
+    # Vérification pikepdf (moteur principal de compression)
+    pikepdf_ok = pikepdf is not None
 
     _init_queue()
     if "uploader_key" not in st.session_state:
@@ -366,9 +346,9 @@ def main() -> None:
             CompressionProfile("Moyen", dpi=0, quality=0)
         )
     if prof_state.get("lite", {}).get("enabled"):
-        # Très légers uses fixed Ghostscript params: 96 DPI, JPEG quality 60
+        # Très légers: pikepdf recompression q30, scale 35%
         profiles.append(
-            CompressionProfile("Très légers", dpi=96, quality=60)
+            CompressionProfile("Très légers", dpi=0, quality=30)
         )
     
     # Debug: afficher les profils construits
@@ -378,21 +358,19 @@ def main() -> None:
             if p.name == "Nettoyer":
                 st.write(f"- 🧹 {p.name} : supprime fonds perdus, qualité intacte")
             elif p.name == "Moyen":
-                st.write(f"- ⚖️ {p.name} : compression modérée (150 DPI, qualité 80)")
+                st.write(f"- ⚖️ {p.name} : compression modérée (qualité 55, échelle 70%)")
             else:
-                st.write(f"- 💾 {p.name} : compression maximale (96 DPI, qualité 60)")
+                st.write(f"- 💾 {p.name} : compression maximale (qualité 30, échelle 35%)")
 
     has_outputs = bool(profiles)
 
-    # Vérifier que Ghostscript est disponible pour les profils qui en ont besoin
-    needs_gs = any(p.name in ("Moyen", "Très légers") for p in profiles)
-    if needs_gs and not ghostscript_ok:
-        st.error("⚠️ Ghostscript est requis pour ce profil. Installez via : `brew install ghostscript`")
+    if not pikepdf_ok:
+        st.error("⚠️ pikepdf n'est pas disponible. Vérifiez l'installation.")
 
     start_disabled = (
         (not st.session_state.queue)
         or (not has_outputs)
-        or (needs_gs and not ghostscript_ok)
+        or (not pikepdf_ok)
     )
 
     start = st.button(

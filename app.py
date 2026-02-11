@@ -48,10 +48,14 @@ def _default_app_support() -> Path:
 
 
 APP_SUPPORT_DIR = Path(os.environ.get("ROTO_APP_SUPPORT_DIR", _default_app_support()))
-SITE_PACKAGES = APP_SUPPORT_DIR / "site-packages"
-SITE_PACKAGES.mkdir(parents=True, exist_ok=True)
-if str(SITE_PACKAGES) not in sys.path:
-    sys.path.insert(0, str(SITE_PACKAGES))
+try:
+    SITE_PACKAGES = APP_SUPPORT_DIR / "site-packages"
+    SITE_PACKAGES.mkdir(parents=True, exist_ok=True)
+    if str(SITE_PACKAGES) not in sys.path:
+        sys.path.insert(0, str(SITE_PACKAGES))
+except OSError:
+    # Streamlit Cloud or read-only filesystem — deps are in requirements.txt
+    SITE_PACKAGES = None
 
 
 def _missing_modules(mods: Iterable[str]) -> list[str]:
@@ -59,6 +63,9 @@ def _missing_modules(mods: Iterable[str]) -> list[str]:
 
 
 def _install_deps(mods: Iterable[str]) -> None:
+    if SITE_PACKAGES is None:
+        # On Cloud, deps come from requirements.txt — skip install
+        return
     cmd = [
         sys.executable,
         "-m",
@@ -73,7 +80,10 @@ def _install_deps(mods: Iterable[str]) -> None:
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         log_path = APP_SUPPORT_DIR / "install_error.log"
-        log_path.write_text(result.stdout + "\n" + result.stderr)
+        try:
+            log_path.write_text(result.stdout + "\n" + result.stderr)
+        except OSError:
+            pass
         raise RuntimeError(
             f"Installation des dépendances échouée (voir {log_path}). Commande: {' '.join(cmd)}"
         )
@@ -134,8 +144,13 @@ def find_qpdf() -> Path | None:
     return None
 
 
-ensure_deps()  # Installe les dépendances manquantes
-warn_pdftoppm()
+try:
+    ensure_deps()  # Installe les dépendances manquantes (local macOS uniquement)
+except Exception:
+    pass  # Sur Streamlit Cloud, les deps viennent de requirements.txt
+
+if sys.platform == "darwin":
+    warn_pdftoppm()
 
 try:
     from pdf2image import convert_from_path  # noqa: E402
