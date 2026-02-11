@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import io
 import os
 import subprocess
 import sys
@@ -151,6 +152,13 @@ except ImportError as e:
     canvas = None
     ImageReader = None
 
+try:
+    import pikepdf  # noqa: E402
+    from PIL import Image as PILImage  # noqa: E402
+except Exception:
+    pikepdf = None
+    PILImage = None
+
 MM_TO_PT = 72 / 25.4
 
 
@@ -259,12 +267,119 @@ def flatten_transparency_pdf(input_pdf: Path, output_pdf: Path, allow_fallback_1
 
 
 
+def _recompress_all_images(pdf, jpeg_quality: int = 55, scale: float = 1.0) -> int:
+    """Recompress ALL raster images in the PDF using pikepdf + Pillow.
+
+    Iterates every object in the PDF (not just page-level XObjects) to catch
+    images nested inside Form XObjects (common in InDesign exports).
+
+    Uses obj.write(data, filter=DCTDecode) for IN-PLACE modification.
+    This is the only correct pikepdf API for pre-encoded data.
+    (pikepdf.Stream(pdf, data) treats data as DECODED content, which
+    double-encodes JPEG bytes and corrupts the file.)
+
+    Parameters:
+      jpeg_quality: JPEG quality 1-95 (lower = smaller)
+      scale: Downscale factor for images (1.0 = no resize, 0.5 = half)
+
+    Safety rules:
+      • Images with /SMask (transparency) are SKIPPED (keep original).
+      • Images < 200×200 px are SKIPPED (icons, logos).
+      • If recompressed data ≥ original size → SKIPPED.
+      • /DecodeParms and /Decode are removed (stale keys from old filter).
+      • When scale < 1.0, Width/Height are updated to match new dimensions.
+
+    Returns the number of images successfully recompressed.
+    """
+    if pikepdf is None or PILImage is None:
+        return 0
+
+    count = 0
+    n_objects = len(pdf.objects)
+    for idx in range(n_objects):
+        try:
+            obj = pdf.objects[idx]
+            if not isinstance(obj, pikepdf.Stream):
+                continue
+            if obj.get("/Subtype") != pikepdf.Name.Image:
+                continue
+
+            w = int(obj.get("/Width", 0))
+            h = int(obj.get("/Height", 0))
+            if w < 200 or h < 200:
+                continue
+
+            # Skip images with transparency masks
+            if "/SMask" in obj:
+                continue
+
+            # Decode the image pixels
+            try:
+                pil_img = pikepdf.PdfImage(obj).as_pil_image()
+            except Exception:
+                continue
+
+            # Convert to JPEG-safe colour mode
+            if pil_img.mode not in ("RGB", "L"):
+                try:
+                    pil_img = pil_img.convert("RGB")
+                except Exception:
+                    continue
+
+            # Downscale if requested
+            if scale < 1.0:
+                new_w = max(1, int(pil_img.width * scale))
+                new_h = max(1, int(pil_img.height * scale))
+                if new_w < pil_img.width:
+                    pil_img = pil_img.resize((new_w, new_h), PILImage.LANCZOS)
+
+            # Encode as JPEG
+            buf = io.BytesIO()
+            pil_img.save(buf, format="JPEG", quality=jpeg_quality, optimize=True)
+            jpeg_data = buf.getvalue()
+
+            # Only replace if the result is actually smaller
+            try:
+                old_size = len(obj.read_raw_bytes())
+            except Exception:
+                old_size = len(jpeg_data) + 1
+            if len(jpeg_data) >= old_size:
+                continue
+
+            # ── IN-PLACE replacement with correct API ──────────────
+            obj.write(jpeg_data, filter=pikepdf.Name.DCTDecode)
+
+            # Update dimensions if downscaled
+            if scale < 1.0 and pil_img.width != w:
+                obj["/Width"] = pil_img.width
+                obj["/Height"] = pil_img.height
+
+            # Update colour space to match Pillow output
+            if pil_img.mode == "L":
+                obj["/ColorSpace"] = pikepdf.Name.DeviceGray
+            else:
+                obj["/ColorSpace"] = pikepdf.Name.DeviceRGB
+            obj["/BitsPerComponent"] = 8
+
+            # Remove stale keys from the previous filter
+            for stale_key in ("/DecodeParms", "/Decode"):
+                if stale_key in obj:
+                    del obj[stale_key]
+
+            count += 1
+        except Exception as exc:
+            print(f"  [pikepdf] skipping obj {idx}: {exc}")
+            continue
+
+    return count
+
+
 def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionProfile, image_format: str = "jpeg") -> None:
     """
     Handle profiles:
     - "Nettoyer": just copy the cleaned PDF (no compression at all)
-    - "Moyen": use qpdf for safe compression (no rasterization, no aberrations)
-    - "Très légers": rasterize to JPEG images (variable DPI)
+    - "Moyen": pikepdf in-place JPEG recompression (quality 75)
+    - "Très légers": pikepdf in-place JPEG + downscale (quality 45, 50%)
     """
     output_pdf.parent.mkdir(parents=True, exist_ok=True)
     
@@ -275,53 +390,26 @@ def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
         return
     
     if profile.name == "Moyen":
-        # Ghostscript: moderate compression (150 DPI, JPEG quality ~80)
-        # - LeaveColorUnchanged: preserve original colors (no ICC dependency)
-        # - EmbedAllFonts: prevent missing glyphs
-        # - setdistillerparams: proper JPEG quality (QFactor 0.4 ≈ quality 80)
-        gs_bin = find_ghostscript()
-        if gs_bin:
-            cmd = [
-                str(gs_bin),
-                "-dBATCH", "-dNOPAUSE", "-dSAFER", "-dQUIET",
-                "-sDEVICE=pdfwrite",
-                "-dCompatibilityLevel=1.4",
-                "-dAutoRotatePages=/None",
-                # Color: preserve original
-                "-dColorConversionStrategy=/LeaveColorUnchanged",
-                # Fonts: embed everything
-                "-dCompressFonts=true",
-                "-dSubsetFonts=true",
-                "-dEmbedAllFonts=true",
-                # Images: force re-encoding
-                "-dEncodeColorImages=true",
-                "-dEncodeGrayImages=true",
-                "-dPassThroughJPEGImages=false",
-                "-dDetectDuplicateImages=true",
-                # Downsampling
-                "-dDownsampleColorImages=true",
-                "-dDownsampleGrayImages=true",
-                "-dDownsampleMonoImages=false",
-                "-dColorImageDownsampleType=/Bicubic",
-                "-dGrayImageDownsampleType=/Bicubic",
-                "-dColorImageResolution=150",
-                "-dGrayImageResolution=150",
-                "-dMonoImageResolution=300",
-                "-dCompressStreams=true",
-                f"-sOutputFile={output_pdf}",
-                # JPEG quality via PostScript distiller params (QFactor 0.4 ≈ quality 80)
-                "-c",
-                "<< /ColorACSImageDict << /QFactor 0.4 /Blend 1 /HSamples [1 1 1 1] /VSamples [1 1 1 1] >> /GrayACSImageDict << /QFactor 0.4 /Blend 1 /HSamples [1 1 1 1] /VSamples [1 1 1 1] >> >> setdistillerparams",
-                "-f",
-                str(input_pdf),
-            ]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode == 0:
-                print(f"[{profile.name}] Ghostscript moderate compression (150 DPI, QFactor 0.4) -> {output_pdf}")
+        # ── pikepdf: recompress images at quality 75 (no downscale) ───
+        # Modifies ONLY image streams in-place.
+        # Text, vectors, fonts, transparency, page layout stay 100% intact.
+        if pikepdf is not None and PILImage is not None:
+            try:
+                pdf = pikepdf.Pdf.open(input_pdf)
+                total = _recompress_all_images(pdf, jpeg_quality=75, scale=1.0)
+                pdf.save(output_pdf, compress_streams=True)
+                pdf.close()
+                # Validate
+                check = pikepdf.Pdf.open(output_pdf)
+                n_pages = len(check.pages)
+                check.close()
+                print(f"[{profile.name}] pikepdf OK ({total} images, {n_pages} pages) -> {output_pdf}")
                 return
-            print(f"[{profile.name}] Ghostscript failed: {result.stderr.strip()}, trying qpdf fallback")
+            except Exception as e:
+                print(f"[{profile.name}] pikepdf failed: {e}, trying qpdf fallback")
+                output_pdf.unlink(missing_ok=True)
         
-        # Fallback: qpdf if available
+        # Fallback: qpdf stream compression
         qpdf_bin = find_qpdf()
         if qpdf_bin:
             qpdf_cmd = [
@@ -332,58 +420,35 @@ def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
                 str(output_pdf),
             ]
             result = subprocess.run(qpdf_cmd, capture_output=True, text=True)
-            if result.returncode in (0, 3):  # 3 = warnings (OK)
+            if result.returncode in (0, 3):
                 print(f"[{profile.name}] qpdf fallback compression -> {output_pdf}")
                 return
         
-        raise RuntimeError(f"Compression Moyen impossible : ni Ghostscript ni qpdf disponible.")
+        # Last fallback: just copy
+        shutil.copy2(input_pdf, output_pdf)
+        print(f"[{profile.name}] fallback: copied without compression -> {output_pdf}")
     
     if profile.name == "Très légers":
-        # Ghostscript: aggressive compression (96 DPI, JPEG quality ~55)
-        # Same safe params as Moyen but with lower resolution and heavier JPEG
-        gs_bin = find_ghostscript()
-        if gs_bin:
-            cmd = [
-                str(gs_bin),
-                "-dBATCH", "-dNOPAUSE", "-dSAFER", "-dQUIET",
-                "-sDEVICE=pdfwrite",
-                "-dCompatibilityLevel=1.4",
-                "-dAutoRotatePages=/None",
-                # Color: preserve original
-                "-dColorConversionStrategy=/LeaveColorUnchanged",
-                # Fonts: embed everything
-                "-dCompressFonts=true",
-                "-dSubsetFonts=true",
-                "-dEmbedAllFonts=true",
-                # Images: force re-encoding
-                "-dEncodeColorImages=true",
-                "-dEncodeGrayImages=true",
-                "-dPassThroughJPEGImages=false",
-                "-dDetectDuplicateImages=true",
-                # Downsampling - aggressive
-                "-dDownsampleColorImages=true",
-                "-dDownsampleGrayImages=true",
-                "-dDownsampleMonoImages=false",
-                "-dColorImageDownsampleType=/Bicubic",
-                "-dGrayImageDownsampleType=/Bicubic",
-                "-dColorImageResolution=96",
-                "-dGrayImageResolution=96",
-                "-dMonoImageResolution=150",
-                "-dCompressStreams=true",
-                f"-sOutputFile={output_pdf}",
-                # JPEG quality via PostScript distiller params (QFactor 0.76 ≈ quality 55)
-                "-c",
-                "<< /ColorACSImageDict << /QFactor 0.76 /Blend 1 /HSamples [1 1 1 1] /VSamples [1 1 1 1] >> /GrayACSImageDict << /QFactor 0.76 /Blend 1 /HSamples [1 1 1 1] /VSamples [1 1 1 1] >> >> setdistillerparams",
-                "-f",
-                str(input_pdf),
-            ]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode == 0:
-                print(f"[{profile.name}] Ghostscript aggressive compression (96 DPI, QFactor 0.76) -> {output_pdf}")
+        # ── pikepdf: recompress images at quality 45 + downscale 50% ──
+        # Aggressive compression but zero corruption: only image streams
+        # are modified. Text, vectors, fonts, layout stay 100% intact.
+        if pikepdf is not None and PILImage is not None:
+            try:
+                pdf = pikepdf.Pdf.open(input_pdf)
+                total = _recompress_all_images(pdf, jpeg_quality=45, scale=0.5)
+                pdf.save(output_pdf, compress_streams=True)
+                pdf.close()
+                # Validate
+                check = pikepdf.Pdf.open(output_pdf)
+                n_pages = len(check.pages)
+                check.close()
+                print(f"[{profile.name}] pikepdf OK ({total} images, {n_pages} pages) -> {output_pdf}")
                 return
-            print(f"[{profile.name}] Ghostscript failed: {result.stderr.strip()}, trying qpdf fallback")
+            except Exception as e:
+                print(f"[{profile.name}] pikepdf failed: {e}, trying qpdf fallback")
+                output_pdf.unlink(missing_ok=True)
         
-        # Fallback if Ghostscript unavailable or fails: use qpdf if available
+        # Fallback: qpdf stream compression
         qpdf_bin = find_qpdf()
         if qpdf_bin:
             qpdf_cmd = [
@@ -394,11 +459,13 @@ def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
                 str(output_pdf),
             ]
             result = subprocess.run(qpdf_cmd, capture_output=True, text=True)
-            if result.returncode in (0, 3):  # 3 = warnings (OK)
+            if result.returncode in (0, 3):
                 print(f"[{profile.name}] qpdf fallback compression -> {output_pdf}")
                 return
         
-        raise RuntimeError(f"Compression Très légers impossible : ni Ghostscript ni qpdf disponible.")
+        # Last fallback: just copy
+        shutil.copy2(input_pdf, output_pdf)
+        print(f"[{profile.name}] fallback: copied without compression -> {output_pdf}")
     
     # Fallback: should not reach here
     raise RuntimeError(f"Unknown profile: {profile.name}")
