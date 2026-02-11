@@ -275,34 +275,49 @@ def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
         return
     
     if profile.name == "Moyen":
-        # Use Ghostscript for moderate image compression (150 DPI, quality 80)
+        # Ghostscript: moderate compression (150 DPI, JPEG quality ~80)
+        # - LeaveColorUnchanged: preserve original colors (no ICC dependency)
+        # - EmbedAllFonts: prevent missing glyphs
+        # - setdistillerparams: proper JPEG quality (QFactor 0.4 ≈ quality 80)
         gs_bin = find_ghostscript()
         if gs_bin:
             cmd = [
                 str(gs_bin),
-                "-dBATCH", "-dNOPAUSE", "-dSAFER",
+                "-dBATCH", "-dNOPAUSE", "-dSAFER", "-dQUIET",
                 "-sDEVICE=pdfwrite",
                 "-dCompatibilityLevel=1.4",
-                "-dDetectDuplicateImages=true",
+                "-dAutoRotatePages=/None",
+                # Color: preserve original
+                "-dColorConversionStrategy=/LeaveColorUnchanged",
+                # Fonts: embed everything
                 "-dCompressFonts=true",
                 "-dSubsetFonts=true",
+                "-dEmbedAllFonts=true",
+                # Images: force re-encoding
+                "-dEncodeColorImages=true",
+                "-dEncodeGrayImages=true",
+                "-dPassThroughJPEGImages=false",
+                "-dDetectDuplicateImages=true",
+                # Downsampling
+                "-dDownsampleColorImages=true",
+                "-dDownsampleGrayImages=true",
+                "-dDownsampleMonoImages=false",
                 "-dColorImageDownsampleType=/Bicubic",
                 "-dGrayImageDownsampleType=/Bicubic",
                 "-dColorImageResolution=150",
                 "-dGrayImageResolution=150",
-                "-dMonoImageResolution=150",
-                "-dDownsampleColorImages=true",
-                "-dDownsampleGrayImages=true",
-                "-dDownsampleMonoImages=false",
-                "-dJPEGQ=80",
+                "-dMonoImageResolution=300",
                 "-dCompressStreams=true",
-                "-dAutoRotatePages=/None",
                 f"-sOutputFile={output_pdf}",
+                # JPEG quality via PostScript distiller params (QFactor 0.4 ≈ quality 80)
+                "-c",
+                "<< /ColorACSImageDict << /QFactor 0.4 /Blend 1 /HSamples [1 1 1 1] /VSamples [1 1 1 1] >> /GrayACSImageDict << /QFactor 0.4 /Blend 1 /HSamples [1 1 1 1] /VSamples [1 1 1 1] >> >> setdistillerparams",
+                "-f",
                 str(input_pdf),
             ]
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode == 0:
-                print(f"[{profile.name}] Ghostscript moderate compression (150 DPI, quality 80) -> {output_pdf}")
+                print(f"[{profile.name}] Ghostscript moderate compression (150 DPI, QFactor 0.4) -> {output_pdf}")
                 return
             print(f"[{profile.name}] Ghostscript failed: {result.stderr.strip()}, trying qpdf fallback")
         
@@ -324,42 +339,47 @@ def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
         raise RuntimeError(f"Compression Moyen impossible : ni Ghostscript ni qpdf disponible.")
     
     if profile.name == "Très légers":
-        # Use Ghostscript for aggressive image downsampling (NOT rasterization)
-        # This compresses embedded images in the PDF without converting to raster
-        # Result: very light file size, acceptable pixellation, ZERO aberrations
+        # Ghostscript: aggressive compression (96 DPI, JPEG quality ~55)
+        # Same safe params as Moyen but with lower resolution and heavier JPEG
         gs_bin = find_ghostscript()
         if gs_bin:
             cmd = [
                 str(gs_bin),
-                "-dBATCH",
-                "-dNOPAUSE",
-                "-dSAFER",
+                "-dBATCH", "-dNOPAUSE", "-dSAFER", "-dQUIET",
                 "-sDEVICE=pdfwrite",
                 "-dCompatibilityLevel=1.4",
-                "-dDetectDuplicateImages=true",
+                "-dAutoRotatePages=/None",
+                # Color: preserve original
+                "-dColorConversionStrategy=/LeaveColorUnchanged",
+                # Fonts: embed everything
                 "-dCompressFonts=true",
                 "-dSubsetFonts=true",
-                # Image downsampling - aggressive for small file size
-                "-dColorImageDownsampleType=/Bicubic",
-                "-dGrayImageDownsampleType=/Bicubic",
-                "-dMonoImageDownsampleType=/Bicubic",
-                "-dColorImageResolution=96",
-                "-dGrayImageResolution=96",
-                "-dMonoImageResolution=96",
+                "-dEmbedAllFonts=true",
+                # Images: force re-encoding
+                "-dEncodeColorImages=true",
+                "-dEncodeGrayImages=true",
+                "-dPassThroughJPEGImages=false",
+                "-dDetectDuplicateImages=true",
+                # Downsampling - aggressive
                 "-dDownsampleColorImages=true",
                 "-dDownsampleGrayImages=true",
                 "-dDownsampleMonoImages=false",
-                # JPEG compression - aggressive quality for small file
-                "-dJPEGQ=60",
-                # Stream compression
+                "-dColorImageDownsampleType=/Bicubic",
+                "-dGrayImageDownsampleType=/Bicubic",
+                "-dColorImageResolution=96",
+                "-dGrayImageResolution=96",
+                "-dMonoImageResolution=150",
                 "-dCompressStreams=true",
-                "-dAutoRotatePages=/None",
                 f"-sOutputFile={output_pdf}",
+                # JPEG quality via PostScript distiller params (QFactor 0.76 ≈ quality 55)
+                "-c",
+                "<< /ColorACSImageDict << /QFactor 0.76 /Blend 1 /HSamples [1 1 1 1] /VSamples [1 1 1 1] >> /GrayACSImageDict << /QFactor 0.76 /Blend 1 /HSamples [1 1 1 1] /VSamples [1 1 1 1] >> >> setdistillerparams",
+                "-f",
                 str(input_pdf),
             ]
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode == 0:
-                print(f"[{profile.name}] Ghostscript aggressive compression (96 DPI, quality 60) -> {output_pdf}")
+                print(f"[{profile.name}] Ghostscript aggressive compression (96 DPI, QFactor 0.76) -> {output_pdf}")
                 return
             print(f"[{profile.name}] Ghostscript failed: {result.stderr.strip()}, trying qpdf fallback")
         
