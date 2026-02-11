@@ -80,7 +80,7 @@ def _install_deps(mods: Iterable[str]) -> None:
 
 
 def ensure_deps() -> None:
-    required = ["PyPDF2", "pdf2image", "reportlab", "Pillow", "streamlit", "pikepdf"]
+    required = ["pdf2image", "reportlab", "Pillow", "streamlit", "pikepdf"]
     missing = _missing_modules(required)
     if missing:
         _install_deps(required)
@@ -138,16 +138,11 @@ ensure_deps()  # Installe les dépendances manquantes
 warn_pdftoppm()
 
 try:
-    from PyPDF2 import PdfReader, PdfWriter  # noqa: E402
-    from PyPDF2.generic import RectangleObject  # noqa: E402
     from pdf2image import convert_from_path  # noqa: E402
     from reportlab.pdfgen import canvas  # noqa: E402
     from reportlab.lib.utils import ImageReader  # noqa: E402
 except ImportError as e:
     warnings.warn(f"Impossible d'importer les dépendances requises: {e}")
-    PdfReader = None
-    PdfWriter = None
-    RectangleObject = None
     convert_from_path = None
     canvas = None
     ImageReader = None
@@ -172,29 +167,31 @@ class CompressionProfile:
 
 
 def _rectangle_as_tuple(rect) -> Tuple[float, float, float, float]:
-    return float(rect.left), float(rect.bottom), float(rect.right), float(rect.top)
+    """Extract (left, bottom, right, top) from a pikepdf rectangle array."""
+    # pikepdf.Array or list-like [left, bottom, right, top]
+    return float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3])
 
 
-def pick_trim_box(page, bleed_mm: float) -> Tuple[Tuple[float, float, float, float], str]:
+def _pikepdf_pick_trim_box(page, bleed_mm: float) -> Tuple[Tuple[float, float, float, float], str]:
     """
-    Choose the box to keep:
+    Choose the box to keep (pikepdf page dict API):
     - TrimBox if present (best indicator of final size)
     - else BleedBox/CropBox/MediaBox trimmed by bleed_mm on each side.
     """
     if "/TrimBox" in page:
-        base = _rectangle_as_tuple(page.trimbox)
+        base = _rectangle_as_tuple(page["/TrimBox"])
         source = "TrimBox"
         margin_pt = 0.0
     elif "/BleedBox" in page:
-        base = _rectangle_as_tuple(page.bleedbox)
+        base = _rectangle_as_tuple(page["/BleedBox"])
         source = "BleedBox"
         margin_pt = bleed_mm * MM_TO_PT
     elif "/CropBox" in page:
-        base = _rectangle_as_tuple(page.cropbox)
+        base = _rectangle_as_tuple(page["/CropBox"])
         source = "CropBox"
         margin_pt = bleed_mm * MM_TO_PT
     else:
-        base = _rectangle_as_tuple(page.mediabox)
+        base = _rectangle_as_tuple(page["/MediaBox"])
         source = "MediaBox"
         margin_pt = bleed_mm * MM_TO_PT
 
@@ -210,25 +207,32 @@ def pick_trim_box(page, bleed_mm: float) -> Tuple[Tuple[float, float, float, flo
 
 
 def clean_pdf(input_pdf: Path, output_pdf: Path, bleed_mm: float) -> None:
-    if RectangleObject is None or PdfReader is None or PdfWriter is None:
-        raise RuntimeError("RectangleObject, PdfReader or PdfWriter not available. Check PyPDF2 import.")
-    
-    reader = PdfReader(str(input_pdf))
-    writer = PdfWriter()
+    """
+    Crop PDF to TrimBox using pikepdf (zero corruption).
+    Sets MediaBox and CropBox to the computed trim rectangle.
+    pikepdf preserves ALL streams byte-for-byte — no re-encoding,
+    no JPEG corruption, no font/vector loss.
+    """
+    if pikepdf is None:
+        raise RuntimeError("pikepdf is not available. Install with: pip install pikepdf")
 
-    for idx, page in enumerate(reader.pages, start=1):
-        rect, source = pick_trim_box(page, bleed_mm)
-        rect_obj = RectangleObject(rect)
-        page.mediabox = rect_obj
-        page.cropbox = rect_obj
-        page.trimbox = rect_obj
-        page.bleedbox = rect_obj
-        writer.add_page(page)
+    pdf = pikepdf.Pdf.open(input_pdf)
+
+    for idx, page in enumerate(pdf.pages, start=1):
+        rect, source = _pikepdf_pick_trim_box(page, bleed_mm)
+        rect_array = pikepdf.Array([float(rect[0]), float(rect[1]),
+                                     float(rect[2]), float(rect[3])])
+        page["/MediaBox"] = rect_array
+        page["/CropBox"] = rect_array
+        # Remove BleedBox/TrimBox — they now equal MediaBox
+        for box_key in ("/TrimBox", "/BleedBox"):
+            if box_key in page:
+                del page[pikepdf.Name(box_key)]
         print(f"[clean] {input_pdf.name} page {idx}: using {source}")
 
     output_pdf.parent.mkdir(parents=True, exist_ok=True)
-    with output_pdf.open("wb") as f:
-        writer.write(f)
+    pdf.save(output_pdf)
+    pdf.close()
     print(f"[clean] written {output_pdf}")
 
 
@@ -383,8 +387,8 @@ def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
     """
     Handle profiles:
     - "Nettoyer": just copy the cleaned PDF (no compression at all)
-    - "Moyen": pikepdf in-place JPEG recompression (quality 75)
-    - "Très légers": pikepdf in-place JPEG + downscale (quality 45, 50%)
+    - "Moyen": pikepdf in-place JPEG recompression (quality 55, scale 70%)
+    - "Très légers": pikepdf in-place JPEG + downscale (quality 30, scale 35%)
     """
     output_pdf.parent.mkdir(parents=True, exist_ok=True)
     
@@ -395,14 +399,16 @@ def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
         return
     
     if profile.name == "Moyen":
-        # ── pikepdf: recompress images at quality 75 (no downscale) ───
+        # ── pikepdf: recompress images at quality 55, scale 70% ───
         # Modifies ONLY image streams in-place.
         # Text, vectors, fonts, transparency, page layout stay 100% intact.
         if pikepdf is not None and PILImage is not None:
             try:
                 pdf = pikepdf.Pdf.open(input_pdf)
-                total = _recompress_all_images(pdf, jpeg_quality=75, scale=1.0)
-                pdf.save(output_pdf, compress_streams=True)
+                total = _recompress_all_images(pdf, jpeg_quality=55, scale=0.7)
+                pdf.remove_unreferenced_resources()
+                pdf.save(output_pdf, compress_streams=True,
+                         object_stream_mode=pikepdf.ObjectStreamMode.generate)
                 pdf.close()
                 # Validate
                 check = pikepdf.Pdf.open(output_pdf)
@@ -434,14 +440,16 @@ def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
         print(f"[{profile.name}] fallback: copied without compression -> {output_pdf}")
     
     if profile.name == "Très légers":
-        # ── pikepdf: recompress images at quality 45 + downscale 50% ──
+        # ── pikepdf: recompress images at quality 30 + downscale 35% ──
         # Aggressive compression but zero corruption: only image streams
         # are modified. Text, vectors, fonts, layout stay 100% intact.
         if pikepdf is not None and PILImage is not None:
             try:
                 pdf = pikepdf.Pdf.open(input_pdf)
-                total = _recompress_all_images(pdf, jpeg_quality=45, scale=0.5)
-                pdf.save(output_pdf, compress_streams=True)
+                total = _recompress_all_images(pdf, jpeg_quality=30, scale=0.35)
+                pdf.remove_unreferenced_resources()
+                pdf.save(output_pdf, compress_streams=True,
+                         object_stream_mode=pikepdf.ObjectStreamMode.generate)
                 pdf.close()
                 # Validate
                 check = pikepdf.Pdf.open(output_pdf)
@@ -515,8 +523,8 @@ def raster_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
     
     image_format: "jpeg" or "webp"
     """
-    if PdfReader is None:
-        raise RuntimeError("PdfReader is not available. Check PyPDF2 import.")
+    if pikepdf is None:
+        raise RuntimeError("pikepdf is not available. Install with: pip install pikepdf")
     if convert_from_path is None:
         raise RuntimeError("pdf2image module is not available. Check import.")
     if canvas is None:
@@ -524,8 +532,9 @@ def raster_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
     if ImageReader is None:
         raise RuntimeError("ImageReader is not available. Check reportlab import.")
     
-    reader = PdfReader(str(input_pdf))
-    page_count = len(reader.pages)
+    _tmp_pdf = pikepdf.Pdf.open(input_pdf)
+    page_count = len(_tmp_pdf.pages)
+    _tmp_pdf.close()
     
     # sRGB conversion for file size reduction
     use_srgb = True
@@ -558,8 +567,9 @@ def raster_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
                 # Fallback: use original if conversion fails
                 temp_pdf_path = input_pdf
     
-    reader = PdfReader(str(temp_pdf_path))
-    page_count = len(reader.pages)
+    _tmp_pdf2 = pikepdf.Pdf.open(temp_pdf_path)
+    page_count = len(_tmp_pdf2.pages)
+    _tmp_pdf2.close()
     can = canvas.Canvas(str(output_pdf))
 
     for idx in range(page_count):
@@ -597,16 +607,15 @@ def raster_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
 
 
 def merge_pdfs(pdf_paths: list[Path], merged_path: Path) -> None:
-    if PdfReader is None or PdfWriter is None:
-        raise RuntimeError("PdfReader or PdfWriter not available. Check PyPDF2 import.")
-    
-    writer = PdfWriter()
+    if pikepdf is None:
+        raise RuntimeError("pikepdf is not available. Install with: pip install pikepdf")
+
+    merged = pikepdf.Pdf.new()
     for p in pdf_paths:
-        reader = PdfReader(str(p))
-        for page in reader.pages:
-            writer.add_page(page)
-    with merged_path.open("wb") as f:
-        writer.write(f)
+        src = pikepdf.Pdf.open(p)
+        merged.pages.extend(src.pages)
+    merged.save(merged_path)
+    merged.close()
 
 
 def process_one(input_pdf: Path, out_dir: Path, bleed_mm: float, profiles: Iterable[CompressionProfile]) -> None:
