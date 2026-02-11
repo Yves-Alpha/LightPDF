@@ -283,11 +283,13 @@ def _recompress_all_images(pdf, jpeg_quality: int = 55, scale: float = 1.0) -> i
       scale: Downscale factor for images (1.0 = no resize, 0.5 = half)
 
     Safety rules:
-      • Images with /SMask (transparency) are SKIPPED (keep original).
-      • Images < 200×200 px are SKIPPED (icons, logos).
+      • Images with /SMask (transparency): the main image IS recompressed,
+        the SMask reference stays intact (it's a separate object).
+      • Images < 100×100 px are SKIPPED (icons, logos).
       • If recompressed data ≥ original size → SKIPPED.
       • /DecodeParms and /Decode are removed (stale keys from old filter).
       • When scale < 1.0, Width/Height are updated to match new dimensions.
+      • CMYK images are kept in CMYK mode (no RGB conversion).
 
     Returns the number of images successfully recompressed.
     """
@@ -306,12 +308,12 @@ def _recompress_all_images(pdf, jpeg_quality: int = 55, scale: float = 1.0) -> i
 
             w = int(obj.get("/Width", 0))
             h = int(obj.get("/Height", 0))
-            if w < 200 or h < 200:
+            if w < 100 or h < 100:
                 continue
 
-            # Skip images with transparency masks
-            if "/SMask" in obj:
-                continue
+            # NOTE: Images with /SMask ARE recompressed.
+            # The SMask is a separate stream object; the /SMask reference
+            # on this image dict stays intact. We only replace pixel data.
 
             # Decode the image pixels
             try:
@@ -319,8 +321,9 @@ def _recompress_all_images(pdf, jpeg_quality: int = 55, scale: float = 1.0) -> i
             except Exception:
                 continue
 
-            # Convert to JPEG-safe colour mode
-            if pil_img.mode not in ("RGB", "L"):
+            # Accept JPEG-safe colour modes: RGB, L, CMYK
+            # Convert anything else (P, LA, RGBA, PA…) to RGB
+            if pil_img.mode not in ("RGB", "L", "CMYK"):
                 try:
                     pil_img = pil_img.convert("RGB")
                 except Exception:
@@ -333,7 +336,7 @@ def _recompress_all_images(pdf, jpeg_quality: int = 55, scale: float = 1.0) -> i
                 if new_w < pil_img.width:
                     pil_img = pil_img.resize((new_w, new_h), PILImage.LANCZOS)
 
-            # Encode as JPEG
+            # Encode as JPEG (Pillow handles RGB, L, and CMYK)
             buf = io.BytesIO()
             pil_img.save(buf, format="JPEG", quality=jpeg_quality, optimize=True)
             jpeg_data = buf.getvalue()
@@ -355,7 +358,9 @@ def _recompress_all_images(pdf, jpeg_quality: int = 55, scale: float = 1.0) -> i
                 obj["/Height"] = pil_img.height
 
             # Update colour space to match Pillow output
-            if pil_img.mode == "L":
+            if pil_img.mode == "CMYK":
+                obj["/ColorSpace"] = pikepdf.Name.DeviceCMYK
+            elif pil_img.mode == "L":
                 obj["/ColorSpace"] = pikepdf.Name.DeviceGray
             else:
                 obj["/ColorSpace"] = pikepdf.Name.DeviceRGB
