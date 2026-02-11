@@ -275,26 +275,53 @@ def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
         return
     
     if profile.name == "Moyen":
-        # Use qpdf for safe compression (no rasterization, no aberrations)
+        # Use Ghostscript for moderate image compression (150 DPI, quality 80)
+        gs_bin = find_ghostscript()
+        if gs_bin:
+            cmd = [
+                str(gs_bin),
+                "-dBATCH", "-dNOPAUSE", "-dSAFER",
+                "-sDEVICE=pdfwrite",
+                "-dCompatibilityLevel=1.4",
+                "-dDetectDuplicateImages=true",
+                "-dCompressFonts=true",
+                "-dSubsetFonts=true",
+                "-dColorImageDownsampleType=/Bicubic",
+                "-dGrayImageDownsampleType=/Bicubic",
+                "-dColorImageResolution=150",
+                "-dGrayImageResolution=150",
+                "-dMonoImageResolution=150",
+                "-dDownsampleColorImages=true",
+                "-dDownsampleGrayImages=true",
+                "-dDownsampleMonoImages=false",
+                "-dJPEGQ=80",
+                "-dCompressStreams=true",
+                "-dAutoRotatePages=/None",
+                f"-sOutputFile={output_pdf}",
+                str(input_pdf),
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                print(f"[{profile.name}] Ghostscript moderate compression (150 DPI, quality 80) -> {output_pdf}")
+                return
+            print(f"[{profile.name}] Ghostscript failed: {result.stderr.strip()}, trying qpdf fallback")
+        
+        # Fallback: qpdf if available
         qpdf_bin = find_qpdf()
-        if not qpdf_bin:
-            raise RuntimeError("qpdf is required. Install via: brew install qpdf")
+        if qpdf_bin:
+            qpdf_cmd = [
+                str(qpdf_bin),
+                "--stream-data=compress",
+                "--",
+                str(input_pdf),
+                str(output_pdf),
+            ]
+            result = subprocess.run(qpdf_cmd, capture_output=True, text=True)
+            if result.returncode in (0, 3):  # 3 = warnings (OK)
+                print(f"[{profile.name}] qpdf fallback compression -> {output_pdf}")
+                return
         
-        qpdf_cmd = [
-            str(qpdf_bin),
-            "--stream-data=compress",
-            "--",
-            str(input_pdf),
-            str(output_pdf),
-        ]
-        
-        result = subprocess.run(qpdf_cmd, capture_output=True, text=True)
-        if result.returncode == 0:
-            print(f"[{profile.name}] qpdf safe compression -> {output_pdf}")
-            return
-        
-        error_msg = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
-        raise RuntimeError(f"qpdf compression failed: {error_msg}")
+        raise RuntimeError(f"Compression Moyen impossible : ni Ghostscript ni qpdf disponible.")
     
     if profile.name == "Très légers":
         # Use Ghostscript for aggressive image downsampling (NOT rasterization)
@@ -334,28 +361,24 @@ def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
             if result.returncode == 0:
                 print(f"[{profile.name}] Ghostscript aggressive compression (96 DPI, quality 60) -> {output_pdf}")
                 return
-            print(f"[{profile.name}] Ghostscript failed, falling back to qpdf")
+            print(f"[{profile.name}] Ghostscript failed: {result.stderr.strip()}, trying qpdf fallback")
         
-        # Fallback if Ghostscript unavailable or fails: use qpdf
+        # Fallback if Ghostscript unavailable or fails: use qpdf if available
         qpdf_bin = find_qpdf()
-        if not qpdf_bin:
-            raise RuntimeError("qpdf is required. Install via: brew install qpdf")
+        if qpdf_bin:
+            qpdf_cmd = [
+                str(qpdf_bin),
+                "--stream-data=compress",
+                "--",
+                str(input_pdf),
+                str(output_pdf),
+            ]
+            result = subprocess.run(qpdf_cmd, capture_output=True, text=True)
+            if result.returncode in (0, 3):  # 3 = warnings (OK)
+                print(f"[{profile.name}] qpdf fallback compression -> {output_pdf}")
+                return
         
-        qpdf_cmd = [
-            str(qpdf_bin),
-            "--stream-data=compress",
-            "--",
-            str(input_pdf),
-            str(output_pdf),
-        ]
-        
-        result = subprocess.run(qpdf_cmd, capture_output=True, text=True)
-        if result.returncode == 0:
-            print(f"[{profile.name}] qpdf fallback compression -> {output_pdf}")
-            return
-        
-        error_msg = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
-        raise RuntimeError(f"Compression failed for Très légers: {error_msg}")
+        raise RuntimeError(f"Compression Très légers impossible : ni Ghostscript ni qpdf disponible.")
     
     # Fallback: should not reach here
     raise RuntimeError(f"Unknown profile: {profile.name}")
@@ -382,7 +405,7 @@ def compress_images_only_pdf(input_pdf: Path, output_pdf: Path, profile: Compres
     ]
     
     result = subprocess.run(qpdf_cmd, capture_output=True, text=True)
-    if result.returncode == 0:
+    if result.returncode in (0, 3):  # 3 = warnings (OK)
         print(f"[{profile.name}] qpdf compress")
         print(f"[{profile.name}] written {output_pdf}")
         return

@@ -106,6 +106,18 @@ def add_folder_to_queue(folder: Path) -> None:
     st.session_state["group_label"] = folder.name
 
 
+# Suffixe propre pour les noms de fichiers (sans accents ni espaces)
+_PROFILE_SUFFIX = {
+    "Nettoyer": "net",
+    "Moyen": "moyen",
+    "Très légers": "leger",
+}
+
+
+def _file_suffix(profile: CompressionProfile) -> str:
+    return _PROFILE_SUFFIX.get(profile.name, profile.name)
+
+
 def process_queue(
     output_dir: Path,
     bleed_mm: float,
@@ -127,7 +139,7 @@ def process_queue(
             clean_pdf(tmp_pdf, clean_path, bleed_mm=bleed_mm)
             outputs = []
             for profile in profiles:
-                out_pdf = output_dir / f"{base}-{profile.name}.pdf"
+                out_pdf = output_dir / f"{base}-{_file_suffix(profile)}.pdf"
                 vector_compress_pdf(clean_path, out_pdf, profile)
                 outputs.append(str(out_pdf))
             results.append({"name": base, "outputs": outputs})
@@ -336,6 +348,7 @@ def main() -> None:
     st.write(f"File d'attente : {len(st.session_state.queue)} fichier(s)")
     if st.button("🗑️ Tout vider"):
         st.session_state.queue = []
+        st.session_state.pop("download_items", None)
         st.session_state.uploader_key = f"pdf_uploader_{uuid.uuid4()}"
         st.rerun()
 
@@ -363,22 +376,23 @@ def main() -> None:
         st.write("**Profil(s) sélectionné(s) :**")
         for p in profiles:
             if p.name == "Nettoyer":
-                st.write(f"- {p.name}: Supprime fonds perdus, qualité intacte")
+                st.write(f"- 🧹 {p.name} : supprime fonds perdus, qualité intacte")
             elif p.name == "Moyen":
-                st.write(f"- {p.name}: qpdf safe compression")
+                st.write(f"- ⚖️ {p.name} : compression modérée (150 DPI, qualité 80)")
             else:
-                st.write(f"- {p.name}: JPEG DPI={p.dpi}, compression={p.quality}")
+                st.write(f"- 💾 {p.name} : compression maximale (96 DPI, qualité 60)")
 
-    needs_poppler = True  # Always need poppler for rasterization
     has_outputs = bool(profiles)
 
-    if not poppler_ok and needs_poppler:
-        st.error("Poppler/pdftoppm n'est pas installé. Installez via : `brew install poppler`")
+    # Vérifier que Ghostscript est disponible pour les profils qui en ont besoin
+    needs_gs = any(p.name in ("Moyen", "Très légers") for p in profiles)
+    if needs_gs and not ghostscript_ok:
+        st.error("⚠️ Ghostscript est requis pour ce profil. Installez via : `brew install ghostscript`")
 
     start_disabled = (
         (not st.session_state.queue)
-        or (not poppler_ok)
         or (not has_outputs)
+        or (needs_gs and not ghostscript_ok)
     )
 
     start = st.button(
@@ -403,7 +417,7 @@ def main() -> None:
                             clean_pdf(merged, clean_path, bleed_mm=5.0)
                             outputs = []
                             for profile in profiles:
-                                out_pdf = out_dir / f"{base_name}-{profile.name}.pdf"
+                                out_pdf = out_dir / f"{base_name}-{_file_suffix(profile)}.pdf"
                                 vector_compress_pdf(clean_path, out_pdf, profile)
                                 outputs.append(str(out_pdf))
                             results.append({"name": base_name, "outputs": outputs})
@@ -411,49 +425,51 @@ def main() -> None:
                     st.session_state.queue = []
                 else:
                     results = process_queue(out_dir, bleed_mm=5.0, profiles=profiles)
-            
-            st.success("✅ Optimisation terminée !")
-            
-            # Téléchargement des fichiers générés
-            generated_paths = []
+
+            # Stocker les résultats en session pour persistance des téléchargements
+            download_items = []
             for res in results:
                 for out in res["outputs"]:
                     p = Path(out)
                     if p.exists():
-                        generated_paths.append(p)
-            
-            if generated_paths:
-                st.markdown("### ⬇️ Téléchargement")
-                
-                if len(generated_paths) > 1:
-                    # Créer un ZIP avec tous les fichiers
-                    zip_buf = BytesIO()
-                    with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                        for p in generated_paths:
-                            zf.write(p, arcname=p.name)
-                    zip_buf.seek(0)
-                    st.download_button(
-                        "📦 Télécharger tous les fichiers (ZIP)",
-                        data=zip_buf,
-                        file_name="LightPDF_outputs.zip",
-                        mime="application/zip",
-                        use_container_width=True,
-                        key="download_all_zip"
-                    )
-                    st.write("---")
-                
-                # Téléchargements individuels
-                for idx, p in enumerate(generated_paths):
-                    st.download_button(
-                        f"📄 {p.name}",
-                        data=p.read_bytes(),
-                        file_name=p.name,
-                        mime="application/pdf",
-                        use_container_width=True,
-                        key=f"download_{idx}_{p.name}"
-                    )
-            else:
-                st.info("Aucun fichier généré à proposer en téléchargement.")
+                        download_items.append({"name": p.name, "data": p.read_bytes()})
+            st.session_state["download_items"] = download_items
+
+    # ── Section téléchargement (persiste entre les reruns Streamlit) ──
+    if st.session_state.get("download_items"):
+        st.success("✅ Optimisation terminée !")
+        st.markdown("### ⬇️ Téléchargement")
+        items = st.session_state["download_items"]
+
+        if len(items) > 1:
+            zip_buf = BytesIO()
+            with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                for item in items:
+                    zf.writestr(item["name"], item["data"])
+            zip_buf.seek(0)
+            st.download_button(
+                "📦 Télécharger tous les fichiers (ZIP)",
+                data=zip_buf,
+                file_name="LightPDF_outputs.zip",
+                mime="application/zip",
+                use_container_width=True,
+                key="download_all_zip"
+            )
+            st.write("---")
+
+        for idx, item in enumerate(items):
+            st.download_button(
+                f"📄 {item['name']}",
+                data=item["data"],
+                file_name=item["name"],
+                mime="application/pdf",
+                use_container_width=True,
+                key=f"download_{idx}_{item['name']}"
+            )
+
+        if st.button("🗑️ Effacer les résultats"):
+            del st.session_state["download_items"]
+            st.rerun()
 
 
 if __name__ == "__main__":
