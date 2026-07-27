@@ -310,8 +310,9 @@ def _recompress_all_images(pdf, jpeg_quality: int = 55, scale: float = 1.0) -> i
       • If recompressed data ≥ original size → SKIPPED.
       • Images with /Decode or /DecodeParms are SKIPPED because those
         entries can be required for correct colour interpretation.
-      • Only device colour spaces matching the decoded Pillow mode are
-        eligible. ICCBased, Indexed and Separation spaces are preserved.
+      • Only DeviceRGB and DeviceGray images matching the decoded Pillow
+        mode are eligible. CMYK, ICCBased, Indexed and Separation spaces
+        are preserved.
       • When scale < 1.0, Width/Height are updated to match new dimensions.
 
     Returns the number of images successfully recompressed.
@@ -423,8 +424,6 @@ def _recompress_all_images(pdf, jpeg_quality: int = 55, scale: float = 1.0) -> i
                 expected_mode = "RGB"
             elif color_space == pikepdf.Name.DeviceGray:
                 expected_mode = "L"
-            elif color_space == pikepdf.Name.DeviceCMYK:
-                expected_mode = "CMYK"
             else:
                 continue
 
@@ -444,7 +443,9 @@ def _recompress_all_images(pdf, jpeg_quality: int = 55, scale: float = 1.0) -> i
                 if new_w < pil_img.width:
                     pil_img = pil_img.resize((new_w, new_h), PILImage.LANCZOS)
 
-            # Encode as JPEG (Pillow handles RGB, L, and CMYK)
+            # Encode as JPEG. CMYK is deliberately excluded above because
+            # Adobe-style JPEG inversion is interpreted inconsistently by
+            # PDF readers and can make images render as colour negatives.
             buf = io.BytesIO()
             pil_img.save(buf, format="JPEG", quality=jpeg_quality, optimize=True)
             jpeg_data = buf.getvalue()

@@ -85,6 +85,19 @@ class ImageRecompressionTests(unittest.TestCase):
         self.assertEqual(image.read_raw_bytes(), image_before)
         self.assertEqual(list(image["/Decode"]), list(decode))
 
+    def test_cmyk_jpeg_without_decode_is_preserved(self):
+        pdf = app.pikepdf.Pdf.new()
+        image = _image_stream(
+            pdf, _jpeg_bytes("CMYK"), app.pikepdf.Name.DeviceCMYK
+        )
+        image_before = image.read_raw_bytes()
+
+        count = app._recompress_all_images(pdf, jpeg_quality=30, scale=0.5)
+
+        self.assertEqual(count, 0)
+        self.assertEqual(image.read_raw_bytes(), image_before)
+        self.assertEqual((int(image["/Width"]), int(image["/Height"])), (400, 400))
+
     def test_non_device_colour_space_is_preserved(self):
         pdf = app.pikepdf.Pdf.new()
         image = _image_stream(
