@@ -18,7 +18,6 @@ import shutil
 import subprocess
 import sys
 import warnings
-import zlib
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -303,15 +302,17 @@ def _recompress_all_images(pdf, jpeg_quality: int = 55, scale: float = 1.0) -> i
       scale: Downscale factor for images (1.0 = no resize, 0.5 = half)
 
     Safety rules:
-      • Images with /SMask (transparency): the main image IS recompressed,
-        the SMask reference stays intact (it's a separate object).
-      • SMask images themselves are NEVER recompressed (they are alpha
-        masks that must stay lossless — JPEG would create halo artifacts).
+      • Images with /SMask or /Mask are NEVER recompressed. Their pixels,
+        colour space and mask form one compositing unit and must remain
+        byte-for-byte compatible.
+      • Images used by soft masks are NEVER recompressed.
       • Images < 100×100 px are SKIPPED (icons, logos).
       • If recompressed data ≥ original size → SKIPPED.
-      • /DecodeParms and /Decode are removed (stale keys from old filter).
+      • Images with /Decode or /DecodeParms are SKIPPED because those
+        entries can be required for correct colour interpretation.
+      • Only device colour spaces matching the decoded Pillow mode are
+        eligible. ICCBased, Indexed and Separation spaces are preserved.
       • When scale < 1.0, Width/Height are updated to match new dimensions.
-      • CMYK images are kept in CMYK mode (no RGB conversion).
 
     Returns the number of images successfully recompressed.
     """
@@ -321,10 +322,8 @@ def _recompress_all_images(pdf, jpeg_quality: int = 55, scale: float = 1.0) -> i
     # ── Step 1: collect all object IDs that must NOT be recompressed ──
     # Two categories of protected images:
     #
-    # A) /SMask references on Image objects:
-    #    These are alpha masks (grayscale) that MUST stay lossless.
-    #    Recompressing them with JPEG creates halo/artifact around
-    #    transparent edges.
+    # A) /SMask and /Mask references on Image objects:
+    #    These are alpha/stencil masks that MUST stay lossless.
     #
     # B) Images inside ExtGState Soft Mask /G Form XObjects:
     #    InDesign uses Luminosity soft masks (ExtGState → /SMask dict
@@ -342,9 +341,10 @@ def _recompress_all_images(pdf, jpeg_quality: int = 55, scale: float = 1.0) -> i
             obj = pdf.objects[idx]
             if not isinstance(obj, pikepdf.Stream):
                 continue
-            if "/SMask" in obj:
-                smask_ref = obj["/SMask"]
-                smask_objgens.add(smask_ref.objgen)
+            for mask_key in ("/SMask", "/Mask"):
+                mask_ref = obj.get(mask_key, None)
+                if isinstance(mask_ref, pikepdf.Stream):
+                    smask_objgens.add(mask_ref.objgen)
         except Exception:
             continue
 
@@ -387,6 +387,12 @@ def _recompress_all_images(pdf, jpeg_quality: int = 55, scale: float = 1.0) -> i
             if obj.objgen in smask_objgens:
                 continue
 
+            # The image and its transparency mask are a compositing unit.
+            # Re-encoding/downscaling either side can produce black boxes
+            # or halos in InDesign exports, even when dimensions still match.
+            if "/SMask" in obj or "/Mask" in obj:
+                continue
+
             w = int(obj.get("/Width", 0))
             h = int(obj.get("/Height", 0))
             if w < 100 or h < 100:
@@ -403,19 +409,33 @@ def _recompress_all_images(pdf, jpeg_quality: int = 55, scale: float = 1.0) -> i
             if str(cur_filter) != "/DCTDecode":
                 continue
 
+            # Decode settings can carry essential inversion or JPEG colour
+            # transform semantics. Never discard or reinterpret them.
+            if "/Decode" in obj or "/DecodeParms" in obj:
+                continue
+
+            # Recompress only simple device spaces. Pillow may colour-convert
+            # ICCBased/Indexed/Separation images while decoding them, so
+            # writing those pixels back under the original PDF colour space
+            # would change their appearance.
+            color_space = obj.get("/ColorSpace", None)
+            if color_space == pikepdf.Name.DeviceRGB:
+                expected_mode = "RGB"
+            elif color_space == pikepdf.Name.DeviceGray:
+                expected_mode = "L"
+            elif color_space == pikepdf.Name.DeviceCMYK:
+                expected_mode = "CMYK"
+            else:
+                continue
+
             # Decode the image pixels
             try:
                 pil_img = pikepdf.PdfImage(obj).as_pil_image()
             except Exception:
                 continue
 
-            # Accept JPEG-safe colour modes: RGB, L, CMYK
-            # Convert anything else (P, LA, RGBA, PA…) to RGB
-            if pil_img.mode not in ("RGB", "L", "CMYK"):
-                try:
-                    pil_img = pil_img.convert("RGB")
-                except Exception:
-                    continue
+            if pil_img.mode != expected_mode:
+                continue
 
             # Downscale if requested
             if scale < 1.0:
@@ -444,46 +464,6 @@ def _recompress_all_images(pdf, jpeg_quality: int = 55, scale: float = 1.0) -> i
             if scale < 1.0 and pil_img.width != w:
                 obj["/Width"] = pil_img.width
                 obj["/Height"] = pil_img.height
-
-                # ── Also resize the SMask to match ─────────────────
-                # PDF spec requires SMask dimensions == image dimensions.
-                # If we scaled the image, we must scale its SMask too.
-                if "/SMask" in obj:
-                    try:
-                        smask_obj = obj["/SMask"]
-                        smask_pil = pikepdf.PdfImage(smask_obj).as_pil_image()
-                        smask_pil = smask_pil.resize(
-                            (pil_img.width, pil_img.height), PILImage.LANCZOS
-                        )
-                        # SMask must stay lossless (FlateDecode) — never JPEG
-                        # obj.write(data, filter=FlateDecode) expects PRE-ENCODED
-                        # data, so we must zlib-compress the raw bytes ourselves.
-                        raw_gray = smask_pil.tobytes()
-                        compressed_gray = zlib.compress(raw_gray, 9)
-                        smask_obj.write(compressed_gray, filter=pikepdf.Name.FlateDecode)
-                        smask_obj["/Width"] = pil_img.width
-                        smask_obj["/Height"] = pil_img.height
-                        smask_obj["/ColorSpace"] = pikepdf.Name.DeviceGray
-                        smask_obj["/BitsPerComponent"] = 8
-                        for sk in ("/DecodeParms", "/Decode"):
-                            if sk in smask_obj:
-                                del smask_obj[sk]
-                    except Exception as exc:
-                        print(f"  [pikepdf] SMask resize failed for obj {idx}: {exc}")
-
-            # Update colour space to match Pillow output
-            if pil_img.mode == "CMYK":
-                obj["/ColorSpace"] = pikepdf.Name.DeviceCMYK
-            elif pil_img.mode == "L":
-                obj["/ColorSpace"] = pikepdf.Name.DeviceGray
-            else:
-                obj["/ColorSpace"] = pikepdf.Name.DeviceRGB
-            obj["/BitsPerComponent"] = 8
-
-            # Remove stale keys from the previous filter
-            for stale_key in ("/DecodeParms", "/Decode"):
-                if stale_key in obj:
-                    del obj[stale_key]
 
             count += 1
         except Exception as exc:
