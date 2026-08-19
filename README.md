@@ -1,17 +1,32 @@
 # Light-PDF
 
-Outil web pour optimiser des PDF HD (impression roto) : suppression traits de coupe et fonds perdus, compression des images embarquées sans pixellisation du texte ni des vecteurs.
+Outil métier interne pour préparer les adaptations clients à partir des PDF HD imprimeur. Il recadre au format fini, organise les pages selon les noms de production et génère la version de livraison choisie.
 
-## Moteur
+## Parcours utilisateur
 
-- **pikepdf** : crop (TrimBox → MediaBox), recompression JPEG in-place, merge. Zéro corruption — texte, vecteurs, polices, transparences restent intacts.
-- Trois profils : **Nettoyer** (crop seul), **Moyen** (q55, échelle 70%), **Très légers** (q30, échelle 35%).
+- **Qualité d’origine** : recadrage au format fini, sans allègement destructif.
+- **Version écran** : optimisation sûre qui conserve le texte et les éléments PDF.
+- **Version très légère** : pages aplaties pour réduire fortement le poids.
+- **Intranet G20** : conserve la meilleure qualité possible sous 50 Mo ; une réduction forte vise 48 Mo pour garder une marge, et Acrobat reste le dernier recours.
+
+## Règles de production
+
+- Les suites `_01`, `_02`, `_03` peuvent être assemblées dans l’ordre numérique.
+- Une version suffixée `_COR`, `-COR` ou ` COR` remplace automatiquement la page d’origine.
+- Les pages manquantes, corrections concurrentes et mélanges ambigus sont signalés avant traitement.
+- Les fichiers temporaires et non PDF sont ignorés.
+- Le format fini vient en priorité des informations déjà présentes dans le PDF. Aucun retrait arbitraire de 5 mm n’est appliqué si elles sont absentes.
+
+## Sécurité des images
+
+Les versions courantes ne réécrivent plus les images internes une par une. Cette règle protège les fichiers CMJN, profils colorimétriques et transparences rencontrés dans les corpus BUREAU VALLEE, G20 et FRANCAP, et évite le rendu en négatif observé auparavant.
 
 ## Dépendances
 
 - Python 3.11+
 - Modules Python : `pikepdf`, `Pillow`, `pdf2image`, `reportlab`, `streamlit`.
-- Poppler (`pdftoppm`) pour le profil raster uniquement (`brew install poppler`).
+- Poppler (`pdftoppm`) pour les versions très légères et le rattrapage automatique DIAPAR (`brew install poppler`).
+- qpdf pour l’optimisation sans perte (`brew install qpdf`).
 
 ## Usage
 

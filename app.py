@@ -179,6 +179,13 @@ class CompressionProfile:
     quality: int  # JPEG quality (1-95)
     use_vector_compression: bool = False  # If True, use GS compression (keeps vectors/text); if False, rasterize
     image_only: bool = False  # If True, recompress embedded images without rasterizing vectors
+    max_bytes: int | None = None
+    target_bytes: int | None = None
+    output_suffix: str | None = None
+
+
+class OutputConstraintError(RuntimeError):
+    """Raised when a generated file cannot be delivered for a business reason."""
 
 
 def _rectangle_as_tuple(rect) -> Tuple[float, float, float, float]:
@@ -191,33 +198,30 @@ def _pikepdf_pick_trim_box(page, bleed_mm: float) -> Tuple[Tuple[float, float, f
     """
     Choose the box to keep (pikepdf page dict API):
     - TrimBox if present (best indicator of final size)
-    - else BleedBox/CropBox/MediaBox trimmed by bleed_mm on each side.
+    - otherwise preserve CropBox/BleedBox/MediaBox as-is.
+
+    The historical implementation removed ``bleed_mm`` blindly when TrimBox
+    was missing. Reprocessing an already cropped PDF could therefore remove
+    another 5 mm on every side. The argument is kept for API compatibility but
+    is deliberately not used as an inferred crop.
     """
+    del bleed_mm
     if "/TrimBox" in page:
         base = _rectangle_as_tuple(page["/TrimBox"])
         source = "TrimBox"
-        margin_pt = 0.0
-    elif "/BleedBox" in page:
-        base = _rectangle_as_tuple(page["/BleedBox"])
-        source = "BleedBox"
-        margin_pt = bleed_mm * MM_TO_PT
     elif "/CropBox" in page:
         base = _rectangle_as_tuple(page["/CropBox"])
         source = "CropBox"
-        margin_pt = bleed_mm * MM_TO_PT
+    elif "/BleedBox" in page:
+        base = _rectangle_as_tuple(page["/BleedBox"])
+        source = "BleedBox"
     else:
         base = _rectangle_as_tuple(page["/MediaBox"])
         source = "MediaBox"
-        margin_pt = bleed_mm * MM_TO_PT
 
     left, bottom, right, top = base
-    if margin_pt:
-        left += margin_pt
-        bottom += margin_pt
-        right -= margin_pt
-        top -= margin_pt
     if right <= left or top <= bottom:
-        raise ValueError(f"Fonds perdus trop large pour la page ({source})")
+        raise ValueError(f"Format de page invalide ({source})")
     return (left, bottom, right, top), source
 
 
@@ -237,12 +241,10 @@ def clean_pdf(input_pdf: Path, output_pdf: Path, bleed_mm: float) -> None:
         rect, source = _pikepdf_pick_trim_box(page, bleed_mm)
         rect_array = pikepdf.Array([float(rect[0]), float(rect[1]),
                                      float(rect[2]), float(rect[3])])
-        page["/MediaBox"] = rect_array
-        page["/CropBox"] = rect_array
-        # Remove BleedBox/TrimBox — they now equal MediaBox
-        for box_key in ("/TrimBox", "/BleedBox"):
-            if box_key in page:
-                del page[pikepdf.Name(box_key)]
+        # Keeping every page box explicit and equal makes the operation
+        # idempotent: running LightPDF again cannot crop the page a second time.
+        for box_key in ("/MediaBox", "/CropBox", "/TrimBox", "/BleedBox", "/ArtBox"):
+            page[box_key] = pikepdf.Array(rect_array)
         print(f"[clean] {input_pdf.name} page {idx}: using {source}")
 
     output_pdf.parent.mkdir(parents=True, exist_ok=True)
@@ -476,133 +478,144 @@ def _recompress_all_images(pdf, jpeg_quality: int = 55, scale: float = 1.0) -> i
 
 def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionProfile, image_format: str = "jpeg") -> None:
     """
-    Handle profiles:
-    - "Nettoyer": just copy the cleaned PDF (no compression at all)
-    - "Moyen": pikepdf in-place JPEG recompression (quality 55, scale 70%)
-    - "Très légers": pikepdf in-place JPEG + downscale (quality 30, scale 35%)
+    Execute the safe engine behind each delivery profile.
+
+    Image XObjects are never rewritten individually here. The screen and
+    DIAPAR profiles use lossless structural compression; the explicitly light
+    profile rasterizes complete pages to a simple RGB PDF.
     """
     output_pdf.parent.mkdir(parents=True, exist_ok=True)
-    
+
     if profile.name == "Nettoyer":
-        # Just copy - no compression, preserve full quality
         shutil.copy2(input_pdf, output_pdf)
         print(f"[{profile.name}] copied (no compression) -> {output_pdf}")
-        return
-    
-    if profile.name == "Moyen":
-        # ── pikepdf: recompress images at quality 55, scale 70% ───
-        # Modifies ONLY image streams in-place.
-        # Text, vectors, fonts, transparency, page layout stay 100% intact.
-        if pikepdf is not None and PILImage is not None:
-            try:
-                pdf = pikepdf.Pdf.open(input_pdf)
-                total = _recompress_all_images(pdf, jpeg_quality=55, scale=0.7)
-                pdf.remove_unreferenced_resources()
-                pdf.save(output_pdf, compress_streams=True,
-                         object_stream_mode=pikepdf.ObjectStreamMode.generate)
-                pdf.close()
-                # Validate
-                check = pikepdf.Pdf.open(output_pdf)
-                n_pages = len(check.pages)
-                check.close()
-                print(f"[{profile.name}] pikepdf OK ({total} images, {n_pages} pages) -> {output_pdf}")
-                return
-            except Exception as e:
-                print(f"[{profile.name}] pikepdf failed: {e}, trying qpdf fallback")
-                output_pdf.unlink(missing_ok=True)
-        
-        # Fallback: qpdf stream compression
-        qpdf_bin = find_qpdf()
-        if qpdf_bin:
-            qpdf_cmd = [
-                str(qpdf_bin),
-                "--stream-data=compress",
-                "--",
-                str(input_pdf),
-                str(output_pdf),
-            ]
-            result = subprocess.run(qpdf_cmd, capture_output=True, text=True)
-            if result.returncode in (0, 3):
-                print(f"[{profile.name}] qpdf fallback compression -> {output_pdf}")
-                return
-        
-        # Last fallback: just copy
-        shutil.copy2(input_pdf, output_pdf)
-        print(f"[{profile.name}] fallback: copied without compression -> {output_pdf}")
-    
-    if profile.name == "Très légers":
-        # ── pikepdf: recompress images at quality 30 + downscale 35% ──
-        # Aggressive compression but zero corruption: only image streams
-        # are modified. Text, vectors, fonts, layout stay 100% intact.
-        if pikepdf is not None and PILImage is not None:
-            try:
-                pdf = pikepdf.Pdf.open(input_pdf)
-                total = _recompress_all_images(pdf, jpeg_quality=30, scale=0.35)
-                pdf.remove_unreferenced_resources()
-                pdf.save(output_pdf, compress_streams=True,
-                         object_stream_mode=pikepdf.ObjectStreamMode.generate)
-                pdf.close()
-                # Validate
-                check = pikepdf.Pdf.open(output_pdf)
-                n_pages = len(check.pages)
-                check.close()
-                print(f"[{profile.name}] pikepdf OK ({total} images, {n_pages} pages) -> {output_pdf}")
-                return
-            except Exception as e:
-                print(f"[{profile.name}] pikepdf failed: {e}, trying qpdf fallback")
-                output_pdf.unlink(missing_ok=True)
-        
-        # Fallback: qpdf stream compression
-        qpdf_bin = find_qpdf()
-        if qpdf_bin:
-            qpdf_cmd = [
-                str(qpdf_bin),
-                "--stream-data=compress",
-                "--",
-                str(input_pdf),
-                str(output_pdf),
-            ]
-            result = subprocess.run(qpdf_cmd, capture_output=True, text=True)
-            if result.returncode in (0, 3):
-                print(f"[{profile.name}] qpdf fallback compression -> {output_pdf}")
-                return
-        
-        # Last fallback: just copy
-        shutil.copy2(input_pdf, output_pdf)
-        print(f"[{profile.name}] fallback: copied without compression -> {output_pdf}")
-    
-    # Fallback: should not reach here
-    raise RuntimeError(f"Unknown profile: {profile.name}")
+    elif profile.name == "Moyen":
+        compress_images_only_pdf(input_pdf, output_pdf, profile)
+    elif profile.name == "DIAPAR":
+        compress_diapar_pdf(input_pdf, output_pdf, profile)
+    elif profile.name == "Très légers":
+        raster_profile = CompressionProfile(
+            name=profile.name,
+            dpi=profile.dpi or 150,
+            quality=profile.quality or 75,
+            max_bytes=profile.max_bytes,
+        )
+        raster_compress_pdf(input_pdf, output_pdf, raster_profile, image_format=image_format)
+    else:
+        raise RuntimeError(f"Unknown profile: {profile.name}")
+
+    if profile.max_bytes is not None and output_pdf.stat().st_size > profile.max_bytes:
+        actual_size = output_pdf.stat().st_size
+        output_pdf.unlink(missing_ok=True)
+        raise OutputConstraintError(
+            f"Le fichier obtenu fait {actual_size / 1_000_000:.2f} Mo et dépasse la limite de "
+            f"{profile.max_bytes / 1_000_000:.0f} Mo. Il doit être repris dans Acrobat avant livraison."
+        )
 
 
 def compress_images_only_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionProfile) -> None:
     """
-    Recompress PDF while preserving vectors using qpdf.
-    Simple and safe - no Ghostscript tricks.
+    Compress PDF structures without decoding or rewriting image pixels.
     """
     qpdf_bin = find_qpdf()
-    if not qpdf_bin:
-        raise RuntimeError("qpdf est requis pour ce profil. Installez via: brew install qpdf")
-    
     output_pdf.parent.mkdir(parents=True, exist_ok=True)
-    
-    # Single, stable qpdf command
-    qpdf_cmd = [
-        str(qpdf_bin),
-        "--stream-data=compress",
-        "--",
-        str(input_pdf),
-        str(output_pdf),
-    ]
-    
-    result = subprocess.run(qpdf_cmd, capture_output=True, text=True)
-    if result.returncode in (0, 3):  # 3 = warnings (OK)
-        print(f"[{profile.name}] qpdf compress")
-        print(f"[{profile.name}] written {output_pdf}")
+    errors: list[str] = []
+
+    if qpdf_bin:
+        commands = [
+            [
+                str(qpdf_bin),
+                "--stream-data=compress",
+                "--recompress-flate",
+                "--compression-level=9",
+                "--object-streams=generate",
+                "--",
+                str(input_pdf),
+                str(output_pdf),
+            ],
+            [
+                str(qpdf_bin),
+                "--stream-data=compress",
+                "--",
+                str(input_pdf),
+                str(output_pdf),
+            ],
+        ]
+        for command in commands:
+            result = subprocess.run(command, capture_output=True, text=True)
+            if result.returncode in (0, 3) and output_pdf.exists():
+                if pikepdf is not None:
+                    with pikepdf.Pdf.open(output_pdf) as check:
+                        page_count = len(check.pages)
+                else:
+                    page_count = "?"
+                print(f"[{profile.name}] lossless qpdf ({page_count} pages) -> {output_pdf}")
+                return
+            errors.append(result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}")
+            output_pdf.unlink(missing_ok=True)
+
+    if pikepdf is not None:
+        with pikepdf.Pdf.open(input_pdf) as pdf:
+            page_count = len(pdf.pages)
+            pdf.save(
+                output_pdf,
+                compress_streams=True,
+                recompress_flate=True,
+                object_stream_mode=pikepdf.ObjectStreamMode.generate,
+            )
+        print(f"[{profile.name}] lossless pikepdf ({page_count} pages) -> {output_pdf}")
         return
-    
-    error_msg = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
-    raise RuntimeError(f"qpdf compression failed: {error_msg}")
+
+    detail = "; ".join(error for error in errors if error)
+    raise RuntimeError(f"Compression sans perte indisponible. {detail}".strip())
+
+
+def compress_diapar_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionProfile) -> None:
+    """Create a DIAPAR-ready PDF, preferring a text-preserving result.
+
+    Structural compression is attempted first. Only documents still above the
+    delivery target are flattened as complete RGB pages. This avoids the unsafe
+    image-by-image rewriting that caused negative CMYK images in the previous
+    implementation.
+    """
+    target_bytes = profile.target_bytes or profile.max_bytes
+    delivery_limit = profile.max_bytes or target_bytes
+    compress_images_only_pdf(input_pdf, output_pdf, profile)
+    # Keep the text-preserving result whenever it already satisfies the real
+    # delivery rule. The lower target is headroom for the raster fallback.
+    if delivery_limit is None or output_pdf.stat().st_size <= delivery_limit:
+        return
+
+    original_size = output_pdf.stat().st_size
+    best_path: Path | None = None
+    best_size = original_size
+    attempts = ((150, 80), (135, 75), (120, 70), (96, 65))
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for index, (dpi, quality) in enumerate(attempts, start=1):
+            candidate = Path(tmpdir) / f"diapar-{index}.pdf"
+            raster_profile = CompressionProfile("Très légers", dpi=dpi, quality=quality)
+            try:
+                raster_compress_pdf(input_pdf, candidate, raster_profile)
+            except Exception as exc:
+                print(f"[DIAPAR] fallback {dpi} dpi failed: {exc}", file=sys.stderr)
+                continue
+            candidate_size = candidate.stat().st_size
+
+            if candidate_size < best_size:
+                best_size = candidate_size
+                best_path = candidate
+            if candidate_size <= target_bytes:
+                shutil.copy2(candidate, output_pdf)
+                print(
+                    f"[DIAPAR] target reached at {dpi} dpi, q={quality} "
+                    f"({candidate_size / 1_000_000:.2f} MB)"
+                )
+                return
+
+        if best_path is not None:
+            shutil.copy2(best_path, output_pdf)
+            print(f"[DIAPAR] smallest automatic result: {best_size / 1_000_000:.2f} MB")
 
 
 
@@ -660,6 +673,10 @@ def raster_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
     
     _tmp_pdf2 = pikepdf.Pdf.open(temp_pdf_path)
     page_count = len(_tmp_pdf2.pages)
+    page_sizes = []
+    for page in _tmp_pdf2.pages:
+        rect, _source = _pikepdf_pick_trim_box(page, bleed_mm=0)
+        page_sizes.append((rect[2] - rect[0], rect[3] - rect[1]))
     _tmp_pdf2.close()
     can = canvas.Canvas(str(output_pdf))
 
@@ -675,8 +692,14 @@ def raster_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
             continue
         img = images[0].convert("RGB")
 
-        width_pt = img.width / profile.dpi * 72
-        height_pt = img.height / profile.dpi * 72
+        source_width, source_height = page_sizes[idx]
+        rendered_ratio = img.width / img.height
+        normal_delta = abs(rendered_ratio - (source_width / source_height))
+        rotated_delta = abs(rendered_ratio - (source_height / source_width))
+        if rotated_delta < normal_delta:
+            width_pt, height_pt = source_height, source_width
+        else:
+            width_pt, height_pt = source_width, source_height
         can.setPageSize((width_pt, height_pt))
 
         buff = BytesIO()
@@ -703,8 +726,8 @@ def merge_pdfs(pdf_paths: list[Path], merged_path: Path) -> None:
 
     merged = pikepdf.Pdf.new()
     for p in pdf_paths:
-        src = pikepdf.Pdf.open(p)
-        merged.pages.extend(src.pages)
+        with pikepdf.Pdf.open(p) as src:
+            merged.pages.extend(src.pages)
     merged.save(merged_path)
     merged.close()
 
