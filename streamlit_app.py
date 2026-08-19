@@ -134,6 +134,7 @@ def process_queue(
         base = Path(name).stem
         outputs = []
         errors = []
+        needs_acrobat = False
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
                 tmp_pdf = Path(tmpdir) / Path(name).name
@@ -146,13 +147,23 @@ def process_queue(
                     outputs.append(str(out_pdf))
         except OutputConstraintError as exc:
             errors.append(str(exc))
+            if exc.download_path is not None and exc.download_path.exists():
+                outputs.append(str(exc.download_path))
+                needs_acrobat = True
         except Exception as exc:
             print(f"Échec de {name}: {type(exc).__name__}: {exc}", file=sys.stderr)
             errors.append(
                 f"{name} n’a pas pu être préparé automatiquement. "
                 "Il doit être contrôlé dans Acrobat."
             )
-        results.append({"name": base, "outputs": outputs, "errors": errors})
+        results.append(
+            {
+                "name": base,
+                "outputs": outputs,
+                "errors": errors,
+                "needs_acrobat": needs_acrobat,
+            }
+        )
         progress.progress(idx / total, text=f"{name} : terminé ({idx}/{total})")
 
     progress.progress(1.0, text="Conversion terminée.")
@@ -280,6 +291,8 @@ def main() -> None:
     if st.button("🗑️ Tout vider"):
         st.session_state.queue = []
         st.session_state.pop("download_items", None)
+        st.session_state.pop("processing_errors", None)
+        st.session_state.pop("needs_acrobat", None)
         st.session_state.uploader_key = f"pdf_uploader_{uuid.uuid4()}"
         st.rerun()
 
@@ -366,6 +379,7 @@ def main() -> None:
                         base_name = group.output_name
                         outputs = []
                         errors = []
+                        needs_acrobat = False
                         merged = None
                         tmpdir_merge = None
                         try:
@@ -379,6 +393,9 @@ def main() -> None:
                                     outputs.append(str(out_pdf))
                         except OutputConstraintError as exc:
                             errors.append(str(exc))
+                            if exc.download_path is not None and exc.download_path.exists():
+                                outputs.append(str(exc.download_path))
+                                needs_acrobat = True
                         except Exception as exc:
                             print(
                                 f"Échec de {base_name}: {type(exc).__name__}: {exc}",
@@ -391,7 +408,14 @@ def main() -> None:
                         finally:
                             if tmpdir_merge is not None:
                                 tmpdir_merge.cleanup()
-                        results.append({"name": base_name, "outputs": outputs, "errors": errors})
+                        results.append(
+                            {
+                                "name": base_name,
+                                "outputs": outputs,
+                                "errors": errors,
+                                "needs_acrobat": needs_acrobat,
+                            }
+                        )
                     st.session_state.queue = []
                 else:
                     results = process_queue(
@@ -412,11 +436,31 @@ def main() -> None:
             st.session_state["processing_errors"] = [
                 error for result in results for error in result.get("errors", [])
             ]
+            st.session_state["needs_acrobat"] = any(
+                result.get("needs_acrobat", False) for result in results
+            )
 
     # ── Section téléchargement (persiste entre les reruns Streamlit) ──
     if st.session_state.get("download_items"):
-        st.success("✅ Fichiers prêts !")
-        st.markdown("### ⬇️ Téléchargement")
+        needs_acrobat = st.session_state.get("needs_acrobat", False)
+        if needs_acrobat:
+            st.warning("Une dernière étape est nécessaire dans Adobe Acrobat.")
+            st.markdown("### Finaliser le fichier dans Acrobat")
+            st.markdown(
+                """
+1. Téléchargez ci-dessous le fichier dont le nom se termine par **-a-compresser-acrobat.pdf**.
+2. Ouvrez ce fichier avec **Adobe Acrobat**.
+3. Ouvrez l’outil **Compresser un PDF**.
+4. Cliquez sur **Optimisation avancée**.
+5. Sélectionnez le paramètre **Portable**.
+6. Validez avec **OK**, puis enregistrez le fichier.
+7. Vérifiez que le fichier final ne dépasse pas **50 Mo** avant de le livrer.
+                """
+            )
+            st.markdown("### ⬇️ Fichier à télécharger")
+        else:
+            st.success("✅ Fichiers prêts !")
+            st.markdown("### ⬇️ Téléchargement")
         items = st.session_state["download_items"]
 
         if len(items) > 1:
@@ -448,12 +492,14 @@ def main() -> None:
         if st.button("🗑️ Effacer les résultats"):
             del st.session_state["download_items"]
             st.session_state.pop("processing_errors", None)
+            st.session_state.pop("needs_acrobat", None)
             st.rerun()
 
     if st.session_state.get("processing_errors"):
-        st.warning("Certains fichiers nécessitent une reprise manuelle.")
+        if not st.session_state.get("needs_acrobat", False):
+            st.warning("Certains fichiers n’ont pas pu être préparés.")
         for message in st.session_state["processing_errors"]:
-            st.write(f"• {message}")
+            st.caption(message)
 
 
 if __name__ == "__main__":
