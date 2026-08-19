@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from app import CompressionProfile, vector_compress_pdf, flatten_transparency_pdf
 
-def test_vector_compression(pdf_path: str, output_dir: str = "./output") -> None:
+def run_vector_compression(pdf_path: str, output_dir: str = "./output") -> None:
     """Test vector compression with fallback strategies."""
     input_pdf = Path(pdf_path)
     output_path = Path(output_dir)
@@ -46,7 +46,7 @@ def test_vector_compression(pdf_path: str, output_dir: str = "./output") -> None
         print(f"❌ Light compression failed: {e}")
 
 
-def test_flatten_transparency(pdf_path: str, output_dir: str = "./output") -> None:
+def run_flatten_transparency(pdf_path: str, output_dir: str = "./output") -> None:
     """Test transparency flattening with fallback strategies."""
     input_pdf = Path(pdf_path)
     output_path = Path(output_dir)
@@ -86,8 +86,8 @@ if __name__ == "__main__":
     print("🧪 Ghostscript Fallback Strategy Test")
     print("=" * 60)
     
-    test_vector_compression(pdf_file, output_dir)
-    test_flatten_transparency(pdf_file, output_dir)
+    run_vector_compression(pdf_file, output_dir)
+    run_flatten_transparency(pdf_file, output_dir)
     
     print("\n" + "=" * 60)
     print("Test completed!")
