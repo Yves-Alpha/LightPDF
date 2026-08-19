@@ -187,6 +187,10 @@ class CompressionProfile:
 class OutputConstraintError(RuntimeError):
     """Raised when a generated file cannot be delivered for a business reason."""
 
+    def __init__(self, message: str, download_path: Path | None = None):
+        super().__init__(message)
+        self.download_path = download_path
+
 
 def _rectangle_as_tuple(rect) -> Tuple[float, float, float, float]:
     """Extract (left, bottom, right, top) from a pikepdf rectangle array."""
@@ -506,10 +510,17 @@ def vector_compress_pdf(input_pdf: Path, output_pdf: Path, profile: CompressionP
 
     if profile.max_bytes is not None and output_pdf.stat().st_size > profile.max_bytes:
         actual_size = output_pdf.stat().st_size
-        output_pdf.unlink(missing_ok=True)
+        profile_suffix = f"-{profile.output_suffix}" if profile.output_suffix else ""
+        manual_stem = output_pdf.stem
+        if profile_suffix and manual_stem.endswith(profile_suffix):
+            manual_stem = manual_stem[: -len(profile_suffix)]
+        manual_path = output_pdf.with_name(f"{manual_stem}-a-compresser-acrobat.pdf")
+        manual_path.unlink(missing_ok=True)
+        output_pdf.replace(manual_path)
         raise OutputConstraintError(
             f"Le fichier obtenu fait {actual_size / 1_000_000:.2f} Mo et dépasse la limite de "
-            f"{profile.max_bytes / 1_000_000:.0f} Mo. Il doit être repris dans Acrobat avant livraison."
+            f"{profile.max_bytes / 1_000_000:.0f} Mo. Une dernière compression dans Acrobat est nécessaire.",
+            download_path=manual_path,
         )
 
 

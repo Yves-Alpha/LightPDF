@@ -32,17 +32,21 @@ class SafeProfileTests(unittest.TestCase):
 
             self.assertTrue(output.exists())
 
-    def test_hard_size_limit_removes_undeliverable_output(self):
+    def test_hard_size_limit_keeps_output_for_acrobat(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             source = Path(tmpdir) / "source.pdf"
             output = Path(tmpdir) / "screen.pdf"
             self._make_pdf(source)
             profile = app.CompressionProfile("Moyen", dpi=0, quality=0, max_bytes=1)
 
-            with self.assertRaises(app.OutputConstraintError):
+            with self.assertRaises(app.OutputConstraintError) as raised:
                 app.vector_compress_pdf(source, output, profile)
 
             self.assertFalse(output.exists())
+            manual_path = raised.exception.download_path
+            self.assertIsNotNone(manual_path)
+            self.assertTrue(manual_path.exists())
+            self.assertEqual(manual_path.name, "screen-a-compresser-acrobat.pdf")
 
 
 if __name__ == "__main__":
